@@ -1,0 +1,43 @@
+[package]
+name = "metatopia_engine"
+version = "0.1.0"
+edition = "2021"
+authors = ["Ilias Chrysovergis"]
+
+[dependencies]
+# Window and Graphics
+winit = "0.29"
+wgpu = "0.19"
+pollster = "0.3"
+bytemuck = { version = "1.14", features = ["derive"] }
+
+# Math
+cgmath = "0.18"
+
+# ECS (Entity Component System)
+hecs = "0.10"
+
+# Input handling
+gilrs = "0.10"  # Gamepad support
+
+# Asset loading
+image = "0.24"
+ron = "0.8"  # Rusty Object Notation for config files
+serde = { version = "1.0", features = ["derive"] }
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Time management
+instant = "0.1"
+
+# Random number generation (for examples)
+rand = "0.8"
+
+[dev-dependencies]
+# For tests
+
+[[example]]
+name = "basic_game"
+path = "examples/basic_game.rs"

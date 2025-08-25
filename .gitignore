@@ -1,0 +1,96 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo lock file (optional for libraries, but let's keep it for reproducible builds)
+# Cargo.lock
+
+# IDE and editor files
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Test and benchmark results
+tarpaulin-report.html
+criterion/
+
+# Documentation
+/doc/
+
+# Environment files
+.env
+.env.local
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Profiling
+perf.data
+perf.data.old
+flamegraph.svg
+*.profdata
+
+# Coverage
+*.profraw
+coverage/
+lcov.info
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Build directories
+/build/
+/dist/
+/out/
+
+# Package files
+*.tar.gz
+*.zip
+*.7z
+
+# Backup files
+*.backup
+*.bak
+*.old
+
+# Core dumps
+core
+core.*
+vgcore.*
+
+# Python cache (if using any Python scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Node modules (if using any JS/TS tooling)
+node_modules/
+
+# Compiled assets
+/assets/compiled/
