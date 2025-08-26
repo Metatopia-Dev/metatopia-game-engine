@@ -23,7 +23,7 @@ impl MetricTensor {
     /// Create identity metric (Euclidean)
     pub fn identity() -> Self {
         Self {
-            g: Matrix3::from_diagonal(1.0),
+            g: Matrix3::from_diagonal(Vector3::new(1.0, 1.0, 1.0)),
             curvature: 0.0,
         }
     }

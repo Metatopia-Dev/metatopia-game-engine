@@ -2,7 +2,7 @@
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
-use cgmath::{Point3, Quaternion};
+use cgmath::{Point3, Quaternion, InnerSpace};
 use crate::manifold::{ManifoldPosition, ManifoldOrientation, ChartId};
 
 /// Entity identifier
@@ -269,31 +269,48 @@ impl System for PortalTransitionSystem {
         let entities = world.query2::<Transform, Velocity>();
         
         for entity in entities {
-            if let Some(transform) = world.get_component::<Transform>(entity) {
-                if let Some(velocity) = world.get_component::<Velocity>(entity) {
-                    // Check for portal intersections
+            // Collect portal transition data first to avoid borrow conflicts
+            let transition_data = {
+                let transform = world.get_component::<Transform>(entity);
+                let velocity = world.get_component::<Velocity>(entity);
+                
+                if let (Some(transform), Some(velocity)) = (transform, velocity) {
                     if let Ok(manifold) = self.manifold.read() {
                         let position = transform.position.local.to_point();
                         let direction = velocity.linear.normalize();
                         
-                        if let Some((portal_id, intersection, new_chart)) = 
+                        if let Some((_portal_id, intersection, new_chart)) =
                             manifold.ray_portal_intersection(position, direction, transform.position.chart_id) {
                             
-                            // Transition through portal
-                            if let Some(transform_mut) = world.get_component_mut::<Transform>(entity) {
-                                transform_mut.position.chart_id = new_chart;
-                                transform_mut.position.local = crate::manifold::LocalCoordinate::from_point(intersection);
-                                
-                                // Update orientation with parallel transport
-                                if let Some(path) = manifold.compute_geodesic(
-                                    position,
-                                    intersection,
-                                    transform.position.chart_id,
-                                    10
-                                ) {
-                                    transform_mut.orientation.transport_along(&path, &manifold, new_chart);
-                                }
-                            }
+                            let path = manifold.compute_geodesic(
+                                position,
+                                intersection,
+                                transform.position.chart_id,
+                                10
+                            );
+                            
+                            Some((new_chart, intersection, path))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+            
+            // Apply the transition if needed
+            if let Some((new_chart, intersection, path)) = transition_data {
+                if let Some(transform_mut) = world.get_component_mut::<Transform>(entity) {
+                    transform_mut.position.chart_id = new_chart;
+                    transform_mut.position.local = crate::manifold::LocalCoordinate::from_point(intersection);
+                    
+                    // Update orientation with parallel transport
+                    if let Some(path) = path {
+                        if let Ok(manifold) = self.manifold.read() {
+                            transform_mut.orientation.transport_along(&path, &manifold, new_chart);
                         }
                     }
                 }

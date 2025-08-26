@@ -5,6 +5,7 @@ use wgpu::{
     VertexBufferLayout, ShaderModuleDescriptor, ShaderSource,
 };
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Shader program for metric-aware rendering
 pub struct ShaderProgram {
@@ -61,19 +62,17 @@ impl ShaderProgram {
             layout: Some(layout),
             vertex: wgpu::VertexState {
                 module: &self.vertex_module,
-                entry_point: Some("vs_main"),
+                entry_point: "vs_main",
                 buffers: &[vertex_layout],
-                compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &self.fragment_module,
-                entry_point: Some("fs_main"),
+                entry_point: "fs_main",
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
-                compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -97,7 +96,6 @@ impl ShaderProgram {
                 alpha_to_coverage_enabled: false,
             },
             multiview: None,
-            cache: None,
         });
         
         self.pipeline = Some(pipeline);
@@ -107,11 +105,11 @@ impl ShaderProgram {
 /// Shader manager for non-Euclidean spaces
 pub struct Shader {
     programs: HashMap<String, ShaderProgram>,
-    device: Device,
+    device: Arc<Device>,
 }
 
 impl Shader {
-    pub fn new(device: Device) -> Self {
+    pub fn new(device: Arc<Device>) -> Self {
         Self {
             programs: HashMap::new(),
             device,
@@ -299,7 +297,7 @@ impl Shader {
             }
 
             struct PortalData {
-                active: f32,
+                is_active: f32,
                 target_chart: f32,
                 transform: mat4x4<f32>,
             }
@@ -321,7 +319,7 @@ impl Shader {
                 let diffuse = max(dot(in.normal, light_dir), 0.2);
                 
                 // Portal edge visualization
-                if (portal.active > 0.5) {
+                if (portal.is_active > 0.5) {
                     let portal_glow = 0.1 * sin(in.world_pos.x * 10.0) * sin(in.world_pos.y * 10.0);
                     base_color = base_color + vec4<f32>(portal_glow, portal_glow, portal_glow * 0.5, 0.0);
                 }

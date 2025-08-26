@@ -5,7 +5,6 @@ use wgpu::{
     TextureUsages, PresentMode, CompositeAlphaMode,
     CommandEncoder, TextureView, RenderPass,
 };
-use cgmath::{Matrix4, Vector3, Vector4, Rad, perspective};
 use std::sync::Arc;
 
 pub mod mesh;
@@ -29,7 +28,7 @@ pub struct RenderContext<'a> {
 /// Main renderer struct
 pub struct Renderer {
     surface: Surface<'static>,
-    device: Device,
+    device: Arc<Device>,
     queue: Queue,
     config: SurfaceConfiguration,
     size: (u32, u32),
@@ -70,7 +69,6 @@ impl Renderer {
                 label: Some("Metatopia Renderer Device"),
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
-                memory_hints: Default::default(),
             },
             None,
         ).await?;
@@ -95,11 +93,12 @@ impl Renderer {
         
         surface.configure(&device, &config);
         
+        let device = Arc::new(device);
         let shader = Shader::new(device.clone());
         
         Ok(Self {
             surface,
-            device: device.clone(),
+            device,
             queue,
             config,
             size,
@@ -180,7 +179,12 @@ impl Renderer {
                     view: &frame.view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a }),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: r as f64,
+                            g: g as f64,
+                            b: b as f64,
+                            a: a as f64
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],

@@ -15,13 +15,30 @@ pub mod manifold;
 
 // Re-export commonly used types
 pub use core::{Engine, EngineConfig, GameState};
-pub use ecs::{World, Entity, Component};
-pub use graphics::{Renderer, RenderContext, Color};
-pub use input::{InputManager, InputEvent};
+pub use ecs::{World, Entity, Component, Velocity, Renderable, Transform as EcsTransform, TransformSystem, PortalTransitionSystem};
+pub use graphics::{Renderer, RenderContext, Color, Mesh, Vertex, Camera, camera::FPSCameraController};
+pub use input::{InputManager, InputEvent, KeyCode, MouseButton};
 pub use math::{Vec2, Vec3, Mat4, Transform};
 pub use resources::{ResourceManager, AssetLoader};
 pub use time::{Time, Timer};
 pub use window::{Window, WindowBuilder, WindowEvent};
+
+// Prelude module for easy imports
+pub mod prelude {
+    pub use crate::core::{Engine, EngineConfig, GameState};
+    pub use crate::ecs::{World, Entity, Component, Velocity, Renderable,
+                         Transform as EcsTransform, TransformSystem, PortalTransitionSystem};
+    pub use crate::graphics::{Renderer, RenderContext, Color, Mesh, Vertex,
+                              Camera, camera::FPSCameraController};
+    pub use crate::input::{InputManager, InputEvent, KeyCode, MouseButton};
+    pub use crate::math::{Vec2, Vec3, Mat4, Transform};
+    pub use crate::resources::{ResourceManager, AssetLoader};
+    pub use crate::time::{Time, Timer};
+    pub use crate::window::{Window, WindowBuilder, WindowEvent};
+    pub use crate::manifold::{Manifold, Chart, ChartId, Portal, PortalId,
+                              GeometryType, MetricTensor, Geodesic, ManifoldPosition};
+    pub use cgmath::{Point3, Vector3, Quaternion};
+}
 pub use manifold::{
     Manifold, ManifoldPosition, ManifoldOrientation,
     Chart, ChartId, LocalCoordinate,
@@ -31,25 +48,6 @@ pub use manifold::{
 };
 pub use manifold::geodesic::GeodesicRay;
 
-/// Prelude module for convenient imports
-pub mod prelude {
-    pub use crate::{
-        Engine, EngineConfig, GameState,
-        World, Entity, Component,
-        Renderer, RenderContext, Color,
-        InputManager, InputEvent,
-        Vec2, Vec3, Mat4, Transform,
-        ResourceManager, AssetLoader,
-        Time, Timer,
-        Window, WindowBuilder, WindowEvent,
-        Manifold, ManifoldPosition, ManifoldOrientation,
-        Chart, ChartId, LocalCoordinate,
-        Portal, PortalId,
-        Geodesic, GeodesicPath,
-        Metric, MetricTensor, GeometryType,
-        crate::manifold::geodesic::GeodesicRay,
-    };
-}
 
 #[cfg(test)]
 mod tests {

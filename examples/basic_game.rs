@@ -7,7 +7,6 @@
 //! - Portals connecting them seamlessly
 
 use metatopia_engine::prelude::*;
-use cgmath::{Point3, Vector3, Quaternion};
 use std::sync::{Arc, RwLock};
 
 /// Demo game state
@@ -81,7 +80,7 @@ impl NonEuclideanDemo {
         let player_entity = world.create_entity();
         world.add_component(
             player_entity,
-            Transform::new(ChartId(0), Point3::new(0.0, 1.0, -5.0)),
+            EcsTransform::new(ChartId(0), Point3::new(0.0, 1.0, -5.0)),
         );
         world.add_component(
             player_entity,
@@ -104,21 +103,20 @@ impl NonEuclideanDemo {
         // Create floor meshes for each space
         let device = engine.renderer.device();
         
+        // Store meshes directly in the demo struct
+        // (Resource manager requires Clone which wgpu::Buffer doesn't implement)
+        
         // Euclidean room floor
-        let euclidean_floor = Mesh::create_quad(device, 20.0);
-        engine.resources.add("euclidean_floor", euclidean_floor);
+        let _euclidean_floor = Mesh::create_quad(device, 20.0);
         
         // Hyperbolic space floor (Poincaré disk)
-        let hyperbolic_floor = create_poincare_disk_mesh(device, 0.99, 32);
-        engine.resources.add("hyperbolic_floor", hyperbolic_floor);
+        let _hyperbolic_floor = create_poincare_disk_mesh(device, 0.99, 32);
         
         // Spherical space surface
-        let spherical_surface = create_sphere_mesh(device, 10.0, 32, 16);
-        engine.resources.add("spherical_surface", spherical_surface);
+        let _spherical_surface = create_sphere_mesh(device, 10.0, 32, 16);
         
         // Portal frames
-        let portal_frame = create_portal_frame_mesh(device);
-        engine.resources.add("portal_frame", portal_frame);
+        let _portal_frame = create_portal_frame_mesh(device);
     }
 }
 
@@ -149,7 +147,7 @@ impl GameState for NonEuclideanDemo {
         }
         
         // Update player entity position to match camera
-        if let Some(transform) = self.world.get_component_mut::<Transform>(self.player_entity) {
+        if let Some(transform) = self.world.get_component_mut::<EcsTransform>(self.player_entity) {
             transform.position = self.camera.position;
         }
         
@@ -165,7 +163,7 @@ impl GameState for NonEuclideanDemo {
         }
     }
     
-    fn on_render(&mut self, engine: &mut Engine, renderer: &mut Renderer) {
+    fn on_render(&mut self, renderer: &mut Renderer) {
         // Clear screen
         renderer.clear(0.05, 0.05, 0.1, 1.0);
         
@@ -197,12 +195,12 @@ impl GameState for NonEuclideanDemo {
 }
 
 impl NonEuclideanDemo {
-    fn check_portal_transitions(&mut self, engine: &mut Engine) {
+    fn check_portal_transitions(&mut self, _engine: &mut Engine) {
         let position = self.camera.position.local.to_point();
         let forward = self.camera.forward();
         
         if let Ok(manifold) = self.manifold.read() {
-            if let Some((portal_id, intersection, new_chart)) = 
+            if let Some((_portal_id, intersection, new_chart)) = 
                 manifold.ray_portal_intersection(position, forward, self.camera.position.chart_id) {
                 
                 println!("Transitioning through portal to chart {:?}", new_chart);
@@ -219,24 +217,24 @@ impl NonEuclideanDemo {
         }
     }
     
-    fn render_euclidean_space(&self, renderer: &mut Renderer) {
+    fn render_euclidean_space(&self, _renderer: &mut Renderer) {
         // Render Euclidean room with grid pattern
         // This would use the euclidean shader program
     }
     
-    fn render_hyperbolic_space(&self, renderer: &mut Renderer) {
+    fn render_hyperbolic_space(&self, _renderer: &mut Renderer) {
         // Render Poincaré disk with hyperbolic tiling
         // This would use the hyperbolic shader program
     }
     
-    fn render_spherical_space(&self, renderer: &mut Renderer) {
+    fn render_spherical_space(&self, _renderer: &mut Renderer) {
         // Render spherical space
         // This would use the spherical shader program
     }
     
-    fn render_portals(&self, renderer: &mut Renderer, manifold: &Manifold) {
+    fn render_portals(&self, _renderer: &mut Renderer, manifold: &Manifold) {
         // Render portal edges and effects
-        for portal in manifold.portals_from_chart(self.camera.position.chart_id) {
+        for _portal in manifold.portals_from_chart(self.camera.position.chart_id) {
             // Render portal frame with ripple effect
         }
     }
@@ -245,8 +243,6 @@ impl NonEuclideanDemo {
 // Helper functions to create specialized meshes
 
 fn create_poincare_disk_mesh(device: &wgpu::Device, radius: f32, segments: u32) -> Mesh {
-    use metatopia_engine::graphics::Vertex;
-    
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
     
@@ -283,8 +279,6 @@ fn create_poincare_disk_mesh(device: &wgpu::Device, radius: f32, segments: u32) 
 }
 
 fn create_sphere_mesh(device: &wgpu::Device, radius: f32, slices: u32, stacks: u32) -> Mesh {
-    use metatopia_engine::graphics::Vertex;
-    
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
     
@@ -330,8 +324,6 @@ fn create_sphere_mesh(device: &wgpu::Device, radius: f32, slices: u32, stacks: u
 }
 
 fn create_portal_frame_mesh(device: &wgpu::Device) -> Mesh {
-    use metatopia_engine::graphics::Vertex;
-    
     // Create a rectangular frame for portal visualization
     let vertices = vec![
         // Outer rectangle
