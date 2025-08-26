@@ -1,7 +1,7 @@
 // Camera uniform buffer
 struct CameraUniform {
     view_proj: mat4x4<f32>,
-    view_position: vec4<f32>,
+    view_position: vec4<f32>, // xyz = position, w = space_type (0=Euclidean, 1=Hyperbolic, 2=Spherical)
 }
 @group(0) @binding(0)
 var<uniform> camera: CameraUniform;
@@ -54,8 +54,11 @@ fn vs_main(@builtin(vertex_index) in_vertex_index: u32) -> VertexOutput {
     } else if (face == 4u) { // Left wall
         position = vec3<f32>(-room_size, v.y * 3.5 + 1.5, v.x * room_size);
         normal = vec3<f32>(1.0, 0.0, 0.0);
-    } else { // Right wall (portal wall)
-        position = vec3<f32>(room_size, v.y * 3.5 + 1.5, v.x * room_size);
+    } else { // Right wall (portal wall to hyperbolic space)
+        // Create a portal area in the center of the wall
+        let portal_size = 0.4; // Make portal smaller portion of wall
+        let portal_v = v * portal_size;
+        position = vec3<f32>(room_size, portal_v.y * 3.5 + 1.5, portal_v.x * room_size * 0.3);
         normal = vec3<f32>(-1.0, 0.0, 0.0);
     }
     
@@ -69,8 +72,8 @@ fn vs_main(@builtin(vertex_index) in_vertex_index: u32) -> VertexOutput {
         out.color = vec4<f32>(0.2, 0.2, 0.2, 1.0);
     } else if (face == 1u) { // Ceiling - lighter gray
         out.color = vec4<f32>(0.3, 0.3, 0.3, 1.0);
-    } else if (face == 5u) { // Right wall (portal) - purple tint
-        out.color = vec4<f32>(0.6, 0.4, 0.8, 1.0);
+    } else if (face == 5u) { // Right wall (portal) - glowing purple portal
+        out.color = vec4<f32>(0.9, 0.4, 1.0, 1.0);
     } else { // Other walls - blue-gray
         out.color = vec4<f32>(0.4, 0.4, 0.5, 1.0);
     }
@@ -81,44 +84,119 @@ fn vs_main(@builtin(vertex_index) in_vertex_index: u32) -> VertexOutput {
 // Fragment shader with non-Euclidean effects
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // Create a grid pattern on surfaces
-    let grid_scale = 2.0;
-    var grid_coord: vec2<f32>;
-    
-    // Choose grid coordinates based on surface normal
-    if (abs(in.normal.y) > 0.5) { // Floor/ceiling
-        grid_coord = in.world_pos.xz;
-    } else if (abs(in.normal.z) > 0.5) { // Front/back walls
-        grid_coord = in.world_pos.xy;
-    } else { // Left/right walls
-        grid_coord = in.world_pos.zy;
-    }
-    
-    let grid_x = fract(grid_coord.x / grid_scale);
-    let grid_y = fract(grid_coord.y / grid_scale);
-    
-    // Create grid lines
-    let line_width = 0.02;
-    let is_grid_line = (grid_x < line_width || grid_x > 1.0 - line_width) ||
-                       (grid_y < line_width || grid_y > 1.0 - line_width);
-    
     var final_color = in.color;
     
-    // Basic lighting
-    let light_dir = normalize(vec3<f32>(0.5, 0.7, 0.3));
-    let diffuse = max(dot(in.normal, light_dir), 0.0) * 0.5 + 0.5;
-    final_color = final_color * diffuse;
+    // Check if this is a portal (bright purple color)
+    let is_portal = in.color.r > 0.8 && in.color.b > 0.9;
     
-    if (is_grid_line) {
-        // Make grid lines slightly brighter
-        final_color = final_color * 1.3;
+    if (is_portal) {
+        // Animated portal effect
+        let time = camera.view_position.w; // We can use w component for time later
+        let center = vec2<f32>(0.0, 1.5); // Portal center in world space
+        let dist_from_center = length(in.world_pos.yz - center);
+        
+        // Create ripple effect
+        let ripple = sin(dist_from_center * 3.0 - time * 2.0) * 0.5 + 0.5;
+        
+        // Glowing edge effect
+        let edge_glow = 1.0 - smoothstep(0.0, 3.0, dist_from_center);
+        
+        // Combine effects
+        final_color = vec4<f32>(
+            0.6 + ripple * 0.4,
+            0.2 + edge_glow * 0.3,
+            0.9 + ripple * 0.1,
+            1.0
+        );
+        
+        // Add bright center
+        if (dist_from_center < 1.5) {
+            let center_brightness = 1.0 - (dist_from_center / 1.5);
+            final_color += vec4<f32>(center_brightness * 0.3, center_brightness * 0.5, center_brightness * 0.2, 0.0);
+        }
+    } else {
+        // Regular surface with grid pattern
+        // Get space type from camera uniform (w component)
+        let space_type = u32(camera.view_position.w);
+        
+        var grid_scale = 2.0;
+        var line_width = 0.02;
+        var grid_coord: vec2<f32>;
+        
+        // Choose grid coordinates based on surface normal
+        if (abs(in.normal.y) > 0.5) { // Floor/ceiling
+            grid_coord = in.world_pos.xz;
+        } else if (abs(in.normal.z) > 0.5) { // Front/back walls
+            grid_coord = in.world_pos.xy;
+        } else { // Left/right walls
+            grid_coord = in.world_pos.zy;
+        }
+        
+        var is_grid_line = false;
+        
+        // Different patterns for different spaces
+        if (space_type == 0u) { // Euclidean - rectangular grid
+            let grid_x = fract(grid_coord.x / grid_scale);
+            let grid_y = fract(grid_coord.y / grid_scale);
+            is_grid_line = (grid_x < line_width || grid_x > 1.0 - line_width) ||
+                          (grid_y < line_width || grid_y > 1.0 - line_width);
+        } else if (space_type == 1u) { // Hyperbolic - radial pattern
+            let center = vec2<f32>(0.0, 0.0);
+            let dist = length(grid_coord - center);
+            let angle = atan2(grid_coord.y - center.y, grid_coord.x - center.x);
+            
+            // Radial lines
+            let radial_lines = fract(angle / (3.14159 / 6.0)); // 12 radial lines
+            let circular_lines = fract(dist / grid_scale);
+            
+            is_grid_line = (radial_lines < line_width * 2.0 || radial_lines > 1.0 - line_width * 2.0) ||
+                          (circular_lines < line_width || circular_lines > 1.0 - line_width);
+        } else { // Spherical - hexagonal pattern
+            // Simplified hex grid
+            let hex_x = grid_coord.x * 1.15;
+            let hex_y = grid_coord.y;
+            let col = floor(hex_x / grid_scale);
+            let row = floor(hex_y / grid_scale);
+            
+            let hex_grid_x = fract(hex_x / grid_scale);
+            let hex_grid_y = fract(hex_y / grid_scale);
+            
+            // Create diamond pattern as simplified hex
+            let diamond = abs(hex_grid_x - 0.5) + abs(hex_grid_y - 0.5);
+            is_grid_line = diamond < line_width * 2.0;
+        }
+        
+        // Apply space-specific color schemes
+        if (space_type == 0u) { // Euclidean - blue tones
+            final_color = final_color * vec4<f32>(0.7, 0.8, 1.0, 1.0);
+        } else if (space_type == 1u) { // Hyperbolic - purple tones
+            final_color = final_color * vec4<f32>(1.0, 0.7, 1.0, 1.0);
+        } else { // Spherical - orange/warm tones
+            final_color = final_color * vec4<f32>(1.0, 0.9, 0.7, 1.0);
+        }
+        
+        // Basic lighting
+        let light_dir = normalize(vec3<f32>(0.5, 0.7, 0.3));
+        let diffuse = max(dot(in.normal, light_dir), 0.0) * 0.5 + 0.5;
+        final_color = final_color * diffuse;
+        
+        if (is_grid_line) {
+            // Make grid lines brighter and colored based on space
+            if (space_type == 0u) {
+                final_color = vec4<f32>(0.5, 0.7, 1.0, 1.0); // Bright blue lines
+            } else if (space_type == 1u) {
+                final_color = vec4<f32>(1.0, 0.5, 1.0, 1.0); // Bright purple lines
+            } else {
+                final_color = vec4<f32>(1.0, 0.8, 0.4, 1.0); // Bright orange lines
+            }
+        }
+        
+        // Distance fog for depth perception
+        let view_distance = length(camera.view_position.xyz - in.world_pos);
+        let fog_factor = exp(-view_distance * 0.02);
+        let fog_color = vec4<f32>(0.05, 0.05, 0.1, 1.0);
+        final_color = mix(fog_color, final_color, fog_factor);
     }
-    
-    // Distance fog for depth perception
-    let view_distance = length(camera.view_position.xyz - in.world_pos);
-    let fog_factor = exp(-view_distance * 0.02);
-    let fog_color = vec4<f32>(0.05, 0.05, 0.1, 1.0);
-    final_color = mix(fog_color, final_color, fog_factor);
     
     return final_color;
 }

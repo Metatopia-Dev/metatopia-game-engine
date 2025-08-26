@@ -8,7 +8,7 @@
 
 use metatopia_engine::prelude::*;
 use winit::{
-    event::{Event, WindowEvent as WinitWindowEvent, ElementState},
+    event::{Event, WindowEvent as WinitWindowEvent, ElementState, DeviceEvent},
     keyboard::{KeyCode, PhysicalKey},
     event_loop::{ControlFlow, EventLoop},
     window::WindowBuilder as WinitWindowBuilder,
@@ -33,6 +33,7 @@ struct NonEuclideanDemo {
     camera_uniform: CameraUniform,
     camera_buffer: Option<wgpu::Buffer>,
     camera_bind_group: Option<wgpu::BindGroup>,
+    mouse_sensitivity: f32,
 }
 
 impl NonEuclideanDemo {
@@ -83,6 +84,7 @@ impl NonEuclideanDemo {
             },
             camera_buffer: None,
             camera_bind_group: None,
+            mouse_sensitivity: 0.002,
         }
     }
     
@@ -143,11 +145,24 @@ impl NonEuclideanDemo {
         let view_proj = proj * view;
         
         self.camera_uniform.view_proj = view_proj.into();
+        
+        // Encode space type in w component (0=Euclidean, 1=Hyperbolic, 2=Spherical)
+        let space_type = if let Ok(manifold) = self.manifold.read() {
+            match manifold.chart(self.current_chart).unwrap().geometry() {
+                GeometryType::Euclidean => 0.0,
+                GeometryType::Hyperbolic => 1.0,
+                GeometryType::Spherical => 2.0,
+                GeometryType::Custom => 0.0,
+            }
+        } else {
+            0.0
+        };
+        
         self.camera_uniform.view_position = [
             self.camera_position.x,
             self.camera_position.y,
             self.camera_position.z,
-            1.0,
+            space_type,
         ];
     }
     
@@ -170,8 +185,23 @@ impl NonEuclideanDemo {
             KeyCode::ArrowRight => self.camera_rotation.0 += 0.05,
             KeyCode::ArrowUp => self.camera_rotation.1 = (self.camera_rotation.1 - 0.05).max(-1.5).min(1.5),
             KeyCode::ArrowDown => self.camera_rotation.1 = (self.camera_rotation.1 + 0.05).max(-1.5).min(1.5),
+            KeyCode::KeyR => {
+                // Reset position to start
+                self.camera_position = Point3::new(0.0, 1.0, -5.0);
+                self.camera_rotation = (0.0, 0.0);
+                self.current_chart = ChartId(0);
+                println!("Reset to starting position");
+            }
             _ => {}
         }
+    }
+    
+    fn handle_mouse_motion(&mut self, delta_x: f64, delta_y: f64) {
+        self.camera_rotation.0 += delta_x as f32 * self.mouse_sensitivity;
+        self.camera_rotation.1 -= delta_y as f32 * self.mouse_sensitivity;
+        
+        // Clamp pitch to prevent flipping
+        self.camera_rotation.1 = self.camera_rotation.1.clamp(-1.5, 1.5);
     }
 }
 
@@ -181,10 +211,17 @@ async fn run() {
     println!("🌐 Non-Euclidean Game Engine Demo");
     println!("==================================");
     println!("Controls:");
-    println!("  WASD - Move");
-    println!("  Space - Move up");
-    println!("  Shift - Move down");
-    println!("  Walk through portals to transition between spaces!");
+    println!("  WASD - Move horizontally");
+    println!("  Space/Shift - Move up/down");
+    println!("  Mouse - Look around");
+    println!("  Arrow Keys - Manual camera rotation");
+    println!("  R - Reset to start position");
+    println!("  ESC - Exit");
+    println!("\nSpaces:");
+    println!("  Blue room - Euclidean space (starting area)");
+    println!("  Purple room - Hyperbolic space");
+    println!("  Orange room - Spherical space");
+    println!("\nPortals are on the walls - walk through to transition!");
     println!();
     
     // Create event loop and window
@@ -196,6 +233,12 @@ async fn run() {
         .unwrap();
     
     let window = Arc::new(window);
+    
+    // Set cursor grab for mouse look
+    window.set_cursor_grab(winit::window::CursorGrabMode::Confined)
+        .or_else(|_| window.set_cursor_grab(winit::window::CursorGrabMode::Locked))
+        .ok();
+    window.set_cursor_visible(false);
     
     // Create WGPU instance
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -446,6 +489,12 @@ async fn run() {
                 }
                 _ => {}
             },
+            Event::DeviceEvent {
+                event: DeviceEvent::MouseMotion { delta },
+                ..
+            } => {
+                demo.handle_mouse_motion(delta.0, delta.1);
+            }
             Event::AboutToWait => {
                 window.request_redraw();
             }
