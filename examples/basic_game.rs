@@ -1,4 +1,4 @@
-//! Basic demo showcasing non-Euclidean spaces
+//! Basic demo showcasing non-Euclidean spaces with GPU graphics
 //! 
 //! This example creates a world with:
 //! - A Euclidean room
@@ -7,15 +7,32 @@
 //! - Portals connecting them seamlessly
 
 use metatopia_engine::prelude::*;
+use winit::{
+    event::{Event, WindowEvent as WinitWindowEvent, ElementState},
+    keyboard::{KeyCode, PhysicalKey},
+    event_loop::{ControlFlow, EventLoop},
+    window::WindowBuilder as WinitWindowBuilder,
+};
 use std::sync::{Arc, RwLock};
+use cgmath::{InnerSpace, Point3, Vector3, Matrix4, Deg, perspective};
+use wgpu::util::DeviceExt;
 
-/// Demo game state
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct CameraUniform {
+    view_proj: [[f32; 4]; 4],
+    view_position: [f32; 4],
+}
+
 struct NonEuclideanDemo {
     manifold: Arc<RwLock<Manifold>>,
-    camera: Camera,
-    camera_controller: FPSCameraController,
-    world: World,
-    player_entity: Entity,
+    camera_position: Point3<f32>,
+    camera_rotation: (f32, f32), // yaw, pitch
+    current_chart: ChartId,
+    movement_speed: f32,
+    camera_uniform: CameraUniform,
+    camera_buffer: Option<wgpu::Buffer>,
+    camera_bind_group: Option<wgpu::BindGroup>,
 }
 
 impl NonEuclideanDemo {
@@ -30,7 +47,6 @@ impl NonEuclideanDemo {
         let spherical_chart = manifold.add_chart(GeometryType::Spherical);
         
         // Create portals between spaces
-        // Portal from Euclidean to Hyperbolic
         manifold.create_portal(
             ChartId(0), // Euclidean
             hyperbolic_chart,
@@ -39,7 +55,6 @@ impl NonEuclideanDemo {
             Mat4::from_scale(1.0),
         ).unwrap();
         
-        // Portal from Hyperbolic to Spherical
         manifold.create_portal(
             hyperbolic_chart,
             spherical_chart,
@@ -48,7 +63,6 @@ impl NonEuclideanDemo {
             Mat4::from_scale(1.0),
         ).unwrap();
         
-        // Portal from Spherical back to Euclidean
         manifold.create_portal(
             spherical_chart,
             ChartId(0),
@@ -57,156 +71,41 @@ impl NonEuclideanDemo {
             Mat4::from_scale(1.0),
         ).unwrap();
         
-        let manifold = Arc::new(RwLock::new(manifold));
-        
-        // Create camera in Euclidean space
-        let camera = Camera::new(
-            ChartId(0),
-            Point3::new(0.0, 1.0, -5.0),
-            Point3::new(0.0, 0.0, 0.0),
-            1280.0 / 720.0,
-        );
-        
-        let camera_controller = FPSCameraController::new();
-        
-        // Create ECS world
-        let mut world = World::new();
-        
-        // Add systems
-        world.add_system(Box::new(TransformSystem));
-        world.add_system(Box::new(PortalTransitionSystem::new(manifold.clone())));
-        
-        // Create player entity
-        let player_entity = world.create_entity();
-        world.add_component(
-            player_entity,
-            EcsTransform::new(ChartId(0), Point3::new(0.0, 1.0, -5.0)),
-        );
-        world.add_component(
-            player_entity,
-            Velocity {
-                linear: Vector3::new(0.0, 0.0, 0.0),
-                angular: Vector3::new(0.0, 0.0, 0.0),
-            },
-        );
-        
         Self {
-            manifold,
-            camera,
-            camera_controller,
-            world,
-            player_entity,
+            manifold: Arc::new(RwLock::new(manifold)),
+            camera_position: Point3::new(0.0, 1.0, -5.0),
+            camera_rotation: (0.0, 0.0),
+            current_chart: ChartId(0),
+            movement_speed: 0.1,
+            camera_uniform: CameraUniform {
+                view_proj: [[0.0; 4]; 4],
+                view_position: [0.0, 1.0, -5.0, 1.0],
+            },
+            camera_buffer: None,
+            camera_bind_group: None,
         }
     }
     
-    fn create_world_geometry(&mut self, engine: &mut Engine) {
-        // Create floor meshes for each space
-        let device = engine.renderer.device();
-        
-        // Store meshes directly in the demo struct
-        // (Resource manager requires Clone which wgpu::Buffer doesn't implement)
-        
-        // Euclidean room floor
-        let _euclidean_floor = Mesh::create_quad(device, 20.0);
-        
-        // Hyperbolic space floor (Poincaré disk)
-        let _hyperbolic_floor = create_poincare_disk_mesh(device, 0.99, 32);
-        
-        // Spherical space surface
-        let _spherical_surface = create_sphere_mesh(device, 10.0, 32, 16);
-        
-        // Portal frames
-        let _portal_frame = create_portal_frame_mesh(device);
-    }
-}
-
-impl GameState for NonEuclideanDemo {
-    fn on_init(&mut self, engine: &mut Engine) {
-        println!("Non-Euclidean Demo Starting!");
-        println!("Controls:");
-        println!("  WASD - Move");
-        println!("  Mouse - Look around");
-        println!("  Space - Move up");
-        println!("  Shift - Move down");
-        println!("  Walk through portals to transition between spaces!");
-        
-        // Create world geometry
-        self.create_world_geometry(engine);
-        
-        // Initialize shaders for different geometries
-        engine.renderer.shader_mut().create_geometry_shaders();
-    }
-    
-    fn on_update(&mut self, engine: &mut Engine, dt: f32) {
-        // Update camera based on input
-        self.camera_controller.update(&mut self.camera, &engine.input, dt);
-        
-        // Update camera matrices based on current manifold chart
-        if let Ok(manifold) = self.manifold.read() {
-            self.camera.update(&manifold);
-        }
-        
-        // Update player entity position to match camera
-        if let Some(transform) = self.world.get_component_mut::<EcsTransform>(self.player_entity) {
-            transform.position = self.camera.position;
-        }
-        
-        // Update ECS systems
-        self.world.update(dt);
+    fn update(&mut self, _dt: f32) {
+        // Simple physics update
+        // In a real game, this would handle more complex movement
         
         // Check for portal transitions
-        self.check_portal_transitions(engine);
-        
-        // Handle escape key
-        if engine.input.is_key_pressed(KeyCode::Escape) {
-            engine.quit();
-        }
+        self.check_portal_transitions();
     }
     
-    fn on_render(&mut self, renderer: &mut Renderer) {
-        // Clear screen
-        renderer.clear(0.05, 0.05, 0.1, 1.0);
-        
-        // Render based on current chart geometry
-        if let Ok(manifold) = self.manifold.read() {
-            let chart = manifold.active_chart();
-            
-            match chart.geometry() {
-                GeometryType::Euclidean => {
-                    self.render_euclidean_space(renderer);
-                }
-                GeometryType::Hyperbolic => {
-                    self.render_hyperbolic_space(renderer);
-                }
-                GeometryType::Spherical => {
-                    self.render_spherical_space(renderer);
-                }
-                GeometryType::Custom => {}
-            }
-            
-            // Render portals
-            self.render_portals(renderer, &manifold);
-        }
-    }
-    
-    fn on_cleanup(&mut self, _engine: &mut Engine) {
-        println!("Non-Euclidean Demo Ending!");
-    }
-}
-
-impl NonEuclideanDemo {
-    fn check_portal_transitions(&mut self, _engine: &mut Engine) {
-        let position = self.camera.position.local.to_point();
-        let forward = self.camera.forward();
+    fn check_portal_transitions(&mut self) {
+        let forward = self.get_forward_vector();
         
         if let Ok(manifold) = self.manifold.read() {
             if let Some((_portal_id, intersection, new_chart)) = 
-                manifold.ray_portal_intersection(position, forward, self.camera.position.chart_id) {
+                manifold.ray_portal_intersection(self.camera_position, forward, self.current_chart) {
                 
                 println!("Transitioning through portal to chart {:?}", new_chart);
                 
-                // Update camera position to new chart
-                self.camera.set_position(new_chart, intersection);
+                // Update position to new chart
+                self.camera_position = intersection;
+                self.current_chart = new_chart;
                 
                 // Update manifold active chart
                 drop(manifold); // Release read lock
@@ -217,156 +116,344 @@ impl NonEuclideanDemo {
         }
     }
     
-    fn render_euclidean_space(&self, _renderer: &mut Renderer) {
-        // Render Euclidean room with grid pattern
-        // This would use the euclidean shader program
+    fn get_forward_vector(&self) -> Vector3<f32> {
+        let (yaw, pitch) = self.camera_rotation;
+        Vector3::new(
+            yaw.cos() * pitch.cos(),
+            pitch.sin(),
+            yaw.sin() * pitch.cos(),
+        )
     }
     
-    fn render_hyperbolic_space(&self, _renderer: &mut Renderer) {
-        // Render Poincaré disk with hyperbolic tiling
-        // This would use the hyperbolic shader program
-    }
-    
-    fn render_spherical_space(&self, _renderer: &mut Renderer) {
-        // Render spherical space
-        // This would use the spherical shader program
-    }
-    
-    fn render_portals(&self, _renderer: &mut Renderer, manifold: &Manifold) {
-        // Render portal edges and effects
-        for _portal in manifold.portals_from_chart(self.camera.position.chart_id) {
-            // Render portal frame with ripple effect
-        }
-    }
-}
-
-// Helper functions to create specialized meshes
-
-fn create_poincare_disk_mesh(device: &wgpu::Device, radius: f32, segments: u32) -> Mesh {
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
-    
-    // Center vertex
-    vertices.push(Vertex::new(
-        [0.0, 0.0, 0.0],
-        [0.5, 0.5],
-        [0.0, 0.0, 1.0],
-        [0.5, 0.5, 1.0, 1.0],
-    ));
-    
-    // Create disk vertices
-    for i in 0..segments {
-        let angle = (i as f32) * 2.0 * std::f32::consts::PI / segments as f32;
-        let x = radius * angle.cos();
-        let y = radius * angle.sin();
+    fn update_camera_uniform(&mut self, aspect_ratio: f32) {
+        // Create view matrix
+        let (yaw, pitch) = self.camera_rotation;
+        let forward = self.get_forward_vector();
+        let target = self.camera_position + forward;
+        let view = Matrix4::<f32>::look_at_rh(
+            self.camera_position,
+            Point3::new(target.x, target.y, target.z),
+            Vector3::unit_y(),
+        );
         
-        vertices.push(Vertex::new(
-            [x, y, 0.0],
-            [(x + 1.0) / 2.0, (y + 1.0) / 2.0],
-            [0.0, 0.0, 1.0],
-            [0.3, 0.3, 0.8, 1.0],
-        ));
-    }
-    
-    // Create triangles
-    for i in 0..segments {
-        indices.push(0);
-        indices.push((i + 1) as u16);
-        indices.push(((i + 1) % segments + 1) as u16);
-    }
-    
-    Mesh::new(device, vertices, indices)
-}
-
-fn create_sphere_mesh(device: &wgpu::Device, radius: f32, slices: u32, stacks: u32) -> Mesh {
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
-    
-    // Generate sphere vertices
-    for stack in 0..=stacks {
-        let phi = std::f32::consts::PI * (stack as f32) / (stacks as f32);
+        // Create projection matrix
+        let proj = perspective(Deg(45.0), aspect_ratio, 0.1, 100.0);
         
-        for slice in 0..=slices {
-            let theta = 2.0 * std::f32::consts::PI * (slice as f32) / (slices as f32);
-            
-            let x = radius * phi.sin() * theta.cos();
-            let y = radius * phi.cos();
-            let z = radius * phi.sin() * theta.sin();
-            
-            let normal = [x / radius, y / radius, z / radius];
-            
-            vertices.push(Vertex::new(
-                [x, y, z],
-                [slice as f32 / slices as f32, stack as f32 / stacks as f32],
-                normal,
-                [0.7, 0.7, 0.3, 1.0],
-            ));
-        }
+        // Combine into view-projection matrix
+        let view_proj = proj * view;
+        
+        self.camera_uniform.view_proj = view_proj.into();
+        self.camera_uniform.view_position = [
+            self.camera_position.x,
+            self.camera_position.y,
+            self.camera_position.z,
+            1.0,
+        ];
     }
     
-    // Generate indices
-    for stack in 0..stacks {
-        for slice in 0..slices {
-            let first = stack * (slices + 1) + slice;
-            let second = first + slices + 1;
-            
-            indices.push(first as u16);
-            indices.push(second as u16);
-            indices.push((first + 1) as u16);
-            
-            indices.push(second as u16);
-            indices.push((second + 1) as u16);
-            indices.push((first + 1) as u16);
+    fn handle_keyboard(&mut self, key: KeyCode, pressed: bool) {
+        if !pressed {
+            return;
+        }
+        
+        let forward = self.get_forward_vector();
+        let right = Vector3::new(-forward.z, 0.0, forward.x).normalize();
+        
+        match key {
+            KeyCode::KeyW => self.camera_position += forward * self.movement_speed,
+            KeyCode::KeyS => self.camera_position -= forward * self.movement_speed,
+            KeyCode::KeyA => self.camera_position -= right * self.movement_speed,
+            KeyCode::KeyD => self.camera_position += right * self.movement_speed,
+            KeyCode::Space => self.camera_position.y += self.movement_speed,
+            KeyCode::ShiftLeft => self.camera_position.y -= self.movement_speed,
+            KeyCode::ArrowLeft => self.camera_rotation.0 -= 0.05,
+            KeyCode::ArrowRight => self.camera_rotation.0 += 0.05,
+            KeyCode::ArrowUp => self.camera_rotation.1 = (self.camera_rotation.1 - 0.05).max(-1.5).min(1.5),
+            KeyCode::ArrowDown => self.camera_rotation.1 = (self.camera_rotation.1 + 0.05).max(-1.5).min(1.5),
+            _ => {}
         }
     }
-    
-    Mesh::new(device, vertices, indices)
 }
 
-fn create_portal_frame_mesh(device: &wgpu::Device) -> Mesh {
-    // Create a rectangular frame for portal visualization
-    let vertices = vec![
-        // Outer rectangle
-        Vertex::new([-1.2, -1.8, 0.0], [0.0, 0.0], [0.0, 0.0, 1.0], [0.5, 0.8, 1.0, 0.8]),
-        Vertex::new([1.2, -1.8, 0.0], [1.0, 0.0], [0.0, 0.0, 1.0], [0.5, 0.8, 1.0, 0.8]),
-        Vertex::new([1.2, 1.8, 0.0], [1.0, 1.0], [0.0, 0.0, 1.0], [0.5, 0.8, 1.0, 0.8]),
-        Vertex::new([-1.2, 1.8, 0.0], [0.0, 1.0], [0.0, 0.0, 1.0], [0.5, 0.8, 1.0, 0.8]),
-        // Inner rectangle (cutout)
-        Vertex::new([-1.0, -1.5, 0.0], [0.1, 0.1], [0.0, 0.0, 1.0], [0.5, 0.8, 1.0, 0.3]),
-        Vertex::new([1.0, -1.5, 0.0], [0.9, 0.1], [0.0, 0.0, 1.0], [0.5, 0.8, 1.0, 0.3]),
-        Vertex::new([1.0, 1.5, 0.0], [0.9, 0.9], [0.0, 0.0, 1.0], [0.5, 0.8, 1.0, 0.3]),
-        Vertex::new([-1.0, 1.5, 0.0], [0.1, 0.9], [0.0, 0.0, 1.0], [0.5, 0.8, 1.0, 0.3]),
-    ];
+async fn run() {
+    env_logger::init();
     
-    let indices = vec![
-        // Top bar
-        0, 1, 5, 0, 5, 4,
-        // Right bar
-        1, 2, 6, 1, 6, 5,
-        // Bottom bar
-        2, 3, 7, 2, 7, 6,
-        // Left bar
-        3, 0, 4, 3, 4, 7,
-    ];
+    println!("🌐 Non-Euclidean Game Engine Demo");
+    println!("==================================");
+    println!("Controls:");
+    println!("  WASD - Move");
+    println!("  Space - Move up");
+    println!("  Shift - Move down");
+    println!("  Walk through portals to transition between spaces!");
+    println!();
     
-    Mesh::new(device, vertices, indices)
+    // Create event loop and window
+    let event_loop = EventLoop::new().unwrap();
+    let window = WinitWindowBuilder::new()
+        .with_title("Metatopia - Non-Euclidean Spaces Demo")
+        .with_inner_size(winit::dpi::LogicalSize::new(1280, 720))
+        .build(&event_loop)
+        .unwrap();
+    
+    let window = Arc::new(window);
+    
+    // Create WGPU instance
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::all(),
+        ..Default::default()
+    });
+    
+    // Create surface
+    let surface = instance.create_surface(window.clone()).unwrap();
+    
+    // Get adapter
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::default(),
+            compatible_surface: Some(&surface),
+            force_fallback_adapter: false,
+        })
+        .await
+        .unwrap();
+    
+    // Create device and queue
+    let (device, queue) = adapter
+        .request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("Metatopia Device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    
+    // Configure surface
+    let size = window.inner_size();
+    let mut config = surface
+        .get_default_config(&adapter, size.width, size.height)
+        .unwrap();
+    config.present_mode = wgpu::PresentMode::Fifo; // VSync
+    surface.configure(&device, &config);
+    
+    // Create demo
+    let mut demo = NonEuclideanDemo::new();
+    
+    // Create shader module
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Non-Euclidean Shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/non_euclidean.wgsl").into()),
+    });
+    
+    // Create camera buffer and bind group
+    let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Camera Buffer"),
+        contents: bytemuck::cast_slice(&[demo.camera_uniform]),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+    
+    let camera_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+        label: Some("camera_bind_group_layout"),
+    });
+    
+    let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        layout: &camera_bind_group_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: camera_buffer.as_entire_binding(),
+        }],
+        label: Some("camera_bind_group"),
+    });
+    
+    demo.camera_buffer = Some(camera_buffer);
+    demo.camera_bind_group = Some(camera_bind_group);
+    
+    // Create render pipeline layout
+    let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Render Pipeline Layout"),
+        bind_group_layouts: &[&camera_bind_group_layout],
+        push_constant_ranges: &[],
+    });
+    
+    // Create render pipeline
+    let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Render Pipeline"),
+        layout: Some(&render_pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: "vs_main",
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: "fs_main",
+            targets: &[Some(wgpu::ColorTargetState {
+                format: config.format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: Some(wgpu::Face::Back),
+            polygon_mode: wgpu::PolygonMode::Fill,
+            unclipped_depth: false,
+            conservative: false,
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        multiview: None,
+    });
+    
+    let mut frame_count = 0u32;
+    let start_time = std::time::Instant::now();
+    let mut last_time = start_time;
+    
+    // Run event loop
+    let _ = event_loop.run(move |event, target| {
+        target.set_control_flow(ControlFlow::Poll);
+        
+        match event {
+            Event::WindowEvent {
+                ref event,
+                window_id,
+            } if window_id == window.id() => match event {
+                WinitWindowEvent::CloseRequested => {
+                    target.exit();
+                }
+                WinitWindowEvent::Resized(physical_size) => {
+                    if physical_size.width > 0 && physical_size.height > 0 {
+                        config.width = physical_size.width;
+                        config.height = physical_size.height;
+                        surface.configure(&device, &config);
+                        window.request_redraw();
+                    }
+                }
+                WinitWindowEvent::KeyboardInput { event, .. } => {
+                    if let PhysicalKey::Code(key_code) = event.physical_key {
+                        if key_code == KeyCode::Escape {
+                            target.exit();
+                        } else {
+                            demo.handle_keyboard(key_code, event.state == ElementState::Pressed);
+                        }
+                    }
+                }
+                WinitWindowEvent::RedrawRequested => {
+                    frame_count += 1;
+                    let current_time = std::time::Instant::now();
+                    let dt = (current_time - last_time).as_secs_f32();
+                    last_time = current_time;
+                    
+                    // Update demo
+                    demo.update(dt);
+                    
+                    // Update camera matrices
+                    let aspect_ratio = config.width as f32 / config.height as f32;
+                    demo.update_camera_uniform(aspect_ratio);
+                    
+                    // Write camera uniform to buffer
+                    if let Some(ref camera_buffer) = demo.camera_buffer {
+                        queue.write_buffer(camera_buffer, 0, bytemuck::cast_slice(&[demo.camera_uniform]));
+                    }
+                    
+                    // Get next frame
+                    let output = surface.get_current_texture().unwrap();
+                    let view = output
+                        .texture
+                        .create_view(&wgpu::TextureViewDescriptor::default());
+                    
+                    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("Render Encoder"),
+                    });
+                    
+                    {
+                        // Determine background color based on current space
+                        let color = if let Ok(manifold) = demo.manifold.read() {
+                            match manifold.chart(demo.current_chart).unwrap().geometry() {
+                                GeometryType::Euclidean => wgpu::Color {
+                                    r: 0.05, g: 0.05, b: 0.1, a: 1.0,
+                                },
+                                GeometryType::Hyperbolic => wgpu::Color {
+                                    r: 0.1, g: 0.05, b: 0.15, a: 1.0,
+                                },
+                                GeometryType::Spherical => wgpu::Color {
+                                    r: 0.15, g: 0.1, b: 0.05, a: 1.0,
+                                },
+                                GeometryType::Custom => wgpu::Color {
+                                    r: 0.1, g: 0.1, b: 0.1, a: 1.0,
+                                },
+                            }
+                        } else {
+                            wgpu::Color { r: 0.1, g: 0.1, b: 0.1, a: 1.0 }
+                        };
+                        
+                        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("Render Pass"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: &view,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(color),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            })],
+                            depth_stencil_attachment: None,
+                            occlusion_query_set: None,
+                            timestamp_writes: None,
+                        });
+                        
+                        render_pass.set_pipeline(&render_pipeline);
+                        if let Some(ref bind_group) = demo.camera_bind_group {
+                            render_pass.set_bind_group(0, bind_group, &[]);
+                        }
+                        // Draw multiple quads to form a room
+                        render_pass.draw(0..36, 0..1); // Draw a cube (6 faces * 6 vertices)
+                    }
+                    
+                    queue.submit(std::iter::once(encoder.finish()));
+                    output.present();
+                    
+                    // Print status every 60 frames
+                    if frame_count % 60 == 0 {
+                        let elapsed = start_time.elapsed().as_secs_f32();
+                        let fps = frame_count as f32 / elapsed;
+                        
+                        if let Ok(manifold) = demo.manifold.read() {
+                            let geometry = manifold.chart(demo.current_chart).unwrap().geometry();
+                            println!("FPS: {:.1} | Position: ({:.2}, {:.2}, {:.2}) | Space: {:?}", 
+                                fps, demo.camera_position.x, demo.camera_position.y, demo.camera_position.z, geometry);
+                        }
+                    }
+                    
+                    window.request_redraw();
+                }
+                _ => {}
+            },
+            Event::AboutToWait => {
+                window.request_redraw();
+            }
+            _ => {}
+        }
+    });
 }
 
 fn main() {
-    // Run the demo
-    pollster::block_on(async {
-        let config = EngineConfig {
-            title: "Non-Euclidean Game Engine Demo".to_string(),
-            width: 1280,
-            height: 720,
-            vsync: true,
-            target_fps: Some(60),
-            resizable: true,
-        };
-        
-        let engine = Engine::new(config).await.expect("Failed to create engine");
-        let demo = NonEuclideanDemo::new();
-        
-        engine.run(demo).expect("Failed to run demo");
-    });
+    pollster::block_on(run());
 }
