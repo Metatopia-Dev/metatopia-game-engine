@@ -4,7 +4,7 @@
 //! Uses standard Euclidean geometry for realistic physics and movement.
 
 use metatopia_engine::prelude::*;
-use cgmath::{Point3, Vector3, Quaternion, Rad};
+use cgmath::{Point3, Vector3, InnerSpace};
 use std::collections::HashMap;
 use rand::Rng;
 
@@ -17,7 +17,7 @@ enum PestType {
     Wasp,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum ToolType {
     SprayBottle,
     BaitStation,
@@ -26,7 +26,7 @@ enum ToolType {
     Fumigator,
 }
 
-#[derive(Component, Clone)]
+#[derive(Clone)]
 struct Pest {
     pest_type: PestType,
     health: f32,
@@ -49,7 +49,7 @@ enum PestAIState {
     Dead,
 }
 
-#[derive(Component, Clone)]
+#[derive(Clone)]
 struct Tool {
     tool_type: ToolType,
     ammo: u32,
@@ -65,7 +65,7 @@ impl Component for Tool {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }
 
-#[derive(Component, Clone)]
+#[derive(Clone)]
 struct Infestation {
     severity: f32,  // 0.0 to 1.0
     location_type: LocationType,
@@ -111,7 +111,7 @@ impl PestControlSimulator {
         let player = world.create_entity();
         world.add_component(
             player,
-            Transform::new(ChartId(0), Point3::new(0.0, 1.7, 0.0)),
+            EcsTransform::new(ChartId(0), Point3::new(0.0, 1.7, 0.0)),
         );
         
         // Initialize tools inventory
@@ -195,7 +195,7 @@ impl PestControlSimulator {
         
         self.world.add_component(
             pest_entity,
-            Transform::new(ChartId(0), position),
+            EcsTransform::new(ChartId(0), position),
         );
         
         self.world.add_component(
@@ -292,25 +292,33 @@ impl PestControlSimulator {
     }
     
     fn use_tool(&mut self) {
-        if let Some(tool) = self.tools_inventory.get_mut(&self.current_tool) {
+        // Get tool data first to avoid mutable borrow conflict
+        let tool_data = if let Some(tool) = self.tools_inventory.get_mut(&self.current_tool) {
             if tool.ammo > 0 && self.time_remaining - tool.last_used > tool.cooldown {
                 tool.ammo -= 1;
                 tool.last_used = self.time_remaining;
-                
-                // Apply tool effect
-                match tool.tool_type {
-                    ToolType::SprayBottle | ToolType::VacuumGun => {
-                        self.spray_area(tool.range, tool.damage);
-                    }
-                    ToolType::BaitStation => {
-                        self.place_bait();
-                    }
-                    ToolType::Trap => {
-                        self.place_trap();
-                    }
-                    ToolType::Fumigator => {
-                        self.fumigate_area();
-                    }
+                Some((tool.tool_type, tool.range, tool.damage))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        
+        // Apply tool effect
+        if let Some((tool_type, range, damage)) = tool_data {
+            match tool_type {
+                ToolType::SprayBottle | ToolType::VacuumGun => {
+                    self.spray_area(range, damage);
+                }
+                ToolType::BaitStation => {
+                    self.place_bait();
+                }
+                ToolType::Trap => {
+                    self.place_trap();
+                }
+                ToolType::Fumigator => {
+                    self.fumigate_area();
                 }
             }
         }
@@ -322,20 +330,21 @@ impl PestControlSimulator {
         
         // Check for pest hits
         for pest_entity in self.active_pests.clone() {
-            if let Some(pest_transform) = self.world.get_component::<Transform>(*pest_entity) {
+            if let Some(pest_transform) = self.world.get_component::<EcsTransform>(pest_entity) {
                 let pest_pos = pest_transform.position.local.to_point();
                 let to_pest = pest_pos - camera_pos;
-                let distance = to_pest.magnitude();
+                let distance = (pest_pos - camera_pos).magnitude();
                 
                 if distance <= range {
                     // Check if pest is in front of player
-                    let dot = to_pest.normalize().dot(camera_forward);
+                    let to_pest_normalized = Vector3::new(to_pest.x, to_pest.y, to_pest.z).normalize();
+                    let dot = to_pest_normalized.dot(camera_forward);
                     if dot > 0.7 {  // ~45 degree cone
-                        if let Some(pest) = self.world.get_component_mut::<Pest>(*pest_entity) {
+                        if let Some(pest) = self.world.get_component_mut::<Pest>(pest_entity) {
                             pest.health -= damage;
                             if pest.health <= 0.0 {
                                 pest.ai_state = PestAIState::Dead;
-                                self.eliminate_pest(*pest_entity);
+                                self.eliminate_pest(pest_entity);
                             } else {
                                 pest.ai_state = PestAIState::Fleeing;
                             }
@@ -397,39 +406,52 @@ impl PestControlSimulator {
         self.spawn_infestation(next_location);
     }
     
-    fn update_pest_ai(&mut self, dt: f32) {
+    fn update_pest_ai(&mut self, _dt: f32) {
         let player_pos = self.camera.position.local.to_point();
         
         for pest_entity in self.active_pests.clone() {
-            if let Some(pest) = self.world.get_component_mut::<Pest>(pest_entity) {
-                if let Some(transform) = self.world.get_component::<Transform>(pest_entity) {
-                    let pest_pos = transform.position.local.to_point();
-                    let distance_to_player = (player_pos - pest_pos).magnitude();
-                    
-                    // Update AI state based on player proximity
-                    match pest.ai_state {
-                        PestAIState::Wandering => {
-                            if distance_to_player < pest.detection_radius {
-                                pest.ai_state = PestAIState::Fleeing;
-                            }
+            let pest_pos = if let Some(transform) = self.world.get_component::<EcsTransform>(pest_entity) {
+                transform.position.local.to_point()
+            } else {
+                continue;
+            };
+            
+            let distance_to_player = (pest_pos - player_pos).magnitude();
+            
+            // First update AI state
+            let new_ai_state = if let Some(pest) = self.world.get_component_mut::<Pest>(pest_entity) {
+                let mut new_state = pest.ai_state;
+                
+                // Update AI state based on player proximity
+                match pest.ai_state {
+                    PestAIState::Wandering => {
+                        if distance_to_player < pest.detection_radius {
+                            new_state = PestAIState::Fleeing;
                         }
-                        PestAIState::Fleeing => {
-                            if distance_to_player > pest.detection_radius * 2.0 {
-                                pest.ai_state = PestAIState::Hiding;
-                            }
-                        }
-                        PestAIState::Hiding => {
-                            if distance_to_player > pest.detection_radius * 3.0 {
-                                pest.ai_state = PestAIState::Wandering;
-                            }
-                        }
-                        _ => {}
                     }
+                    PestAIState::Fleeing => {
+                        if distance_to_player > pest.detection_radius * 2.0 {
+                            new_state = PestAIState::Hiding;
+                        }
+                    }
+                    PestAIState::Hiding => {
+                        if distance_to_player > pest.detection_radius * 3.0 {
+                            new_state = PestAIState::Wandering;
+                        }
+                    }
+                    _ => {}
                 }
                 
-                // Update velocity based on AI state
+                pest.ai_state = new_state;
+                Some((new_state, pest.speed))
+            } else {
+                None
+            };
+            
+            // Then update velocity based on the new AI state
+            if let Some((ai_state, speed)) = new_ai_state {
                 if let Some(velocity) = self.world.get_component_mut::<Velocity>(pest_entity) {
-                    match pest.ai_state {
+                    match ai_state {
                         PestAIState::Wandering => {
                             // Random movement
                             let mut rng = rand::thread_rng();
@@ -437,16 +459,16 @@ impl PestControlSimulator {
                                 rng.gen_range(-1.0..1.0),
                                 0.0,
                                 rng.gen_range(-1.0..1.0),
-                            ).normalize() * pest.speed;
+                            ).normalize() * speed;
                         }
                         PestAIState::Fleeing => {
                             // Move away from player
-                            let flee_dir = (pest_pos - player_pos).normalize();
-                            velocity.linear = Vector3::new(
-                                flee_dir.x * pest.speed * 1.5,
+                            let flee_dir = Vector3::new(
+                                pest_pos.x - player_pos.x,
                                 0.0,
-                                flee_dir.z * pest.speed * 1.5,
-                            );
+                                pest_pos.z - player_pos.z,
+                            ).normalize();
+                            velocity.linear = flee_dir * speed * 1.5;
                         }
                         PestAIState::Hiding => {
                             velocity.linear = Vector3::new(0.0, 0.0, 0.0);
@@ -460,7 +482,7 @@ impl PestControlSimulator {
 }
 
 impl GameState for PestControlSimulator {
-    fn on_init(&mut self, engine: &mut Engine) {
+    fn on_init(&mut self, _engine: &mut Engine) {
         println!("=== PEST CONTROL SIMULATOR ===");
         println!("Eliminate all pests to complete each level!");
         println!("\nControls:");
@@ -525,7 +547,7 @@ impl GameState for PestControlSimulator {
         }
     }
     
-    fn on_render(&mut self, engine: &mut Engine, renderer: &mut Renderer) {
+    fn on_render(&mut self, renderer: &mut Renderer) {
         renderer.clear(0.8, 0.8, 0.7, 1.0); // Light interior color
         
         // Render room based on location type
@@ -542,7 +564,7 @@ impl GameState for PestControlSimulator {
         }
         
         // Render pests
-        for pest_entity in &self.active_pests {
+        for _pest_entity in &self.active_pests {
             // Render pest models
         }
         
