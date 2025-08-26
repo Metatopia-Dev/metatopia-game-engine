@@ -480,8 +480,28 @@ async fn run() {
                         
                         if let Ok(manifold) = demo.manifold.read() {
                             let geometry = manifold.chart(demo.current_chart).unwrap().geometry();
-                            println!("FPS: {:.1} | Position: ({:.2}, {:.2}, {:.2}) | Space: {:?}", 
-                                fps, demo.camera_position.x, demo.camera_position.y, demo.camera_position.z, geometry);
+                            
+                            // Get direction indicator
+                            let (yaw, _pitch) = demo.camera_rotation;
+                            let direction = match ((yaw.to_degrees() + 360.0) % 360.0) as i32 {
+                                0..=45 | 316..=360 => "N",
+                                46..=135 => "E",
+                                136..=225 => "S",
+                                226..=315 => "W",
+                                _ => "?"
+                            };
+                            
+                            // Color-coded space indicator
+                            let space_indicator = match geometry {
+                                GeometryType::Euclidean => "🔵 Euclidean",
+                                GeometryType::Hyperbolic => "🟣 Hyperbolic",
+                                GeometryType::Spherical => "🟠 Spherical",
+                                _ => "⚪ Custom"
+                            };
+                            
+                            println!("📍 Pos: ({:>6.2}, {:>6.2}, {:>6.2}) | {} | 🧭 {} | FPS: {:.0}",
+                                demo.camera_position.x, demo.camera_position.y, demo.camera_position.z,
+                                space_indicator, direction, fps);
                         }
                     }
                     
