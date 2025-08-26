@@ -2,8 +2,9 @@
 
 use winit::{
     event::{Event, WindowEvent as WinitWindowEvent},
-    event_loop::{ControlFlow, EventLoop},
+    event_loop::{ControlFlow, EventLoop, EventLoopBuilder},
     window::{Window as WinitWindow, WindowBuilder as WinitWindowBuilder},
+    dpi::LogicalSize,
 };
 use std::sync::Arc;
 
@@ -100,10 +101,43 @@ impl WindowBuilder {
     }
 }
 
+/// Event loop wrapper that can be extracted
+pub struct EventLoopWrapper {
+    event_loop: EventLoop<()>,
+}
+
+impl EventLoopWrapper {
+    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(Self {
+            event_loop: EventLoopBuilder::new().build()?,
+        })
+    }
+    
+    pub fn create_window(&self, builder: &WindowBuilder) -> Result<Arc<WinitWindow>, Box<dyn std::error::Error>> {
+        let window = WinitWindowBuilder::new()
+            .with_title(&builder.title)
+            .with_inner_size(LogicalSize::new(builder.width, builder.height))
+            .with_resizable(builder.resizable)
+            .with_maximized(builder.maximized)
+            .build(&self.event_loop)?;
+        
+        Ok(Arc::new(window))
+    }
+    
+    pub fn run<F>(self, mut event_handler: F) -> Result<(), Box<dyn std::error::Error>>
+    where
+        F: FnMut(Event<()>, &winit::event_loop::EventLoopWindowTarget<()>) + 'static,
+    {
+        self.event_loop.run(move |event, target| {
+            event_handler(event, target);
+        })?;
+        Ok(())
+    }
+}
+
 /// Main window struct
 pub struct Window {
     window: Arc<WinitWindow>,
-    event_loop: Option<EventLoop<()>>,
     events: Vec<WindowEvent>,
     should_close: bool,
     width: u32,
@@ -122,22 +156,25 @@ impl Window {
         Self::from_builder(builder)
     }
     
-    /// Create a window from a builder
+    /// Create a window from a builder (requires event loop to be created separately)
     pub fn from_builder(builder: WindowBuilder) -> Result<Self, Box<dyn std::error::Error>> {
+        // Create a temporary event loop just for window creation
         let event_loop = EventLoop::new()?;
         
         let window = WinitWindowBuilder::new()
             .with_title(&builder.title)
-            .with_inner_size(winit::dpi::LogicalSize::new(builder.width, builder.height))
+            .with_inner_size(LogicalSize::new(builder.width, builder.height))
             .with_resizable(builder.resizable)
             .with_maximized(builder.maximized)
             .build(&event_loop)?;
         
         let window = Arc::new(window);
         
+        // Note: The event loop is dropped here, which is not ideal but allows
+        // the window to be created. In production, use with_event_loop instead.
+        
         Ok(Self {
             window,
-            event_loop: Some(event_loop),
             events: Vec::new(),
             should_close: false,
             width: builder.width,
@@ -145,45 +182,54 @@ impl Window {
         })
     }
     
-    /// Poll and process window events
+    /// Create window with existing event loop
+    pub fn with_event_loop(builder: WindowBuilder, event_loop: &EventLoop<()>) -> Result<Self, Box<dyn std::error::Error>> {
+        let window = WinitWindowBuilder::new()
+            .with_title(&builder.title)
+            .with_inner_size(LogicalSize::new(builder.width, builder.height))
+            .with_resizable(builder.resizable)
+            .with_maximized(builder.maximized)
+            .build(event_loop)?;
+        
+        let window = Arc::new(window);
+        
+        Ok(Self {
+            window,
+            events: Vec::new(),
+            should_close: false,
+            width: builder.width,
+            height: builder.height,
+        })
+    }
+    
+    /// Poll and process window events (stub for compatibility)
     pub fn poll_events(&mut self) {
+        // Events are now handled in the main event loop
+        // This is kept for API compatibility
+    }
+    
+    /// Process a winit event
+    pub fn handle_event(&mut self, event: &Event<()>) {
         self.events.clear();
         
-        if let Some(event_loop) = self.event_loop.take() {
-            let window = self.window.clone();
-            let events = &mut self.events;
-            let should_close = &mut self.should_close;
-            let width = &mut self.width;
-            let height = &mut self.height;
-            
-            event_loop.run(move |event, elwt| {
-                elwt.set_control_flow(ControlFlow::Poll);
-                
+        if let Event::WindowEvent { event, window_id } = event {
+            if window_id == &self.window.id() {
                 match event {
-                    Event::WindowEvent { event, .. } => {
-                        match event {
-                            WinitWindowEvent::CloseRequested => {
-                                *should_close = true;
-                                events.push(WindowEvent::CloseRequested);
-                                elwt.exit();
-                            }
-                            WinitWindowEvent::Resized(size) => {
-                                *width = size.width;
-                                *height = size.height;
-                                events.push(WindowEvent::Resized(size.width, size.height));
-                            }
-                            WinitWindowEvent::Focused(focused) => {
-                                events.push(WindowEvent::Focused(focused));
-                            }
-                            _ => {}
-                        }
+                    WinitWindowEvent::CloseRequested => {
+                        self.should_close = true;
+                        self.events.push(WindowEvent::CloseRequested);
                     }
-                    Event::AboutToWait => {
-                        elwt.exit();
+                    WinitWindowEvent::Resized(size) => {
+                        self.width = size.width;
+                        self.height = size.height;
+                        self.events.push(WindowEvent::Resized(size.width, size.height));
+                    }
+                    WinitWindowEvent::Focused(focused) => {
+                        self.events.push(WindowEvent::Focused(*focused));
                     }
                     _ => {}
                 }
-            }).ok();
+            }
         }
     }
     
@@ -225,5 +271,10 @@ impl Window {
     /// Get window handle as Arc for wgpu
     pub fn window_arc(&self) -> Arc<WinitWindow> {
         self.window.clone()
+    }
+    
+    /// Request a redraw
+    pub fn request_redraw(&self) {
+        self.window.request_redraw();
     }
 }
