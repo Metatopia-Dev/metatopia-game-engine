@@ -12,7 +12,7 @@
 //!   R          – Reset view
 //!   ESC        – Quit
 
-use metatopia_engine::prelude::*;
+// Engine crate (available but this example uses wgpu directly)
 use winit::{
     event::{Event, WindowEvent as WinitWindowEvent, ElementState, DeviceEvent, MouseButton, MouseScrollDelta},
     keyboard::{KeyCode, PhysicalKey},

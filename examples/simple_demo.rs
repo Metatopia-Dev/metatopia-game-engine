@@ -29,7 +29,7 @@ fn main() {
     println!("Creating portals to connect the spaces:");
     
     // Portal from Euclidean to Hyperbolic
-    let portal1 = manifold.create_portal(
+    let _portal1 = manifold.create_portal(
         euclidean_chart,
         hyperbolic_chart,
         Point3::new(10.0, 0.0, 0.0),   // Portal location in Euclidean space
@@ -39,7 +39,7 @@ fn main() {
     println!("  ✓ Portal 1: Euclidean → Hyperbolic at (10, 0, 0)");
     
     // Portal from Hyperbolic to Spherical
-    let portal2 = manifold.create_portal(
+    let _portal2 = manifold.create_portal(
         hyperbolic_chart,
         spherical_chart,
         Point3::new(0.5, 0.5, 0.0),    // Portal in Hyperbolic space
@@ -49,7 +49,7 @@ fn main() {
     println!("  ✓ Portal 2: Hyperbolic → Spherical at (0.5, 0.5, 0)");
     
     // Portal from Spherical back to Euclidean
-    let portal3 = manifold.create_portal(
+    let _portal3 = manifold.create_portal(
         spherical_chart,
         euclidean_chart,
         Point3::new(0.0, 1.0, 0.0),    // Portal on sphere
@@ -136,7 +136,7 @@ fn main() {
     let point = Point3::new(0.1, 0.1, 0.0);
     
     // Euclidean metric (identity matrix - flat space)
-    let euclidean_g = euclidean_metric.tensor_at(point);
+    let _euclidean_g = euclidean_metric.tensor_at(point);
     println!("Euclidean metric at ({:.1}, {:.1}, {:.1}):", point.x, point.y, point.z);
     println!("  g = [[1.0, 0.0, 0.0],");
     println!("       [0.0, 1.0, 0.0],");
@@ -165,7 +165,7 @@ fn main() {
     println!("(How vectors change when moved through curved space)\n");
     
     let start_point = Point3::new(0.0, 0.0, 0.0);
-    let end_point = Point3::new(0.5, 0.0, 0.0);
+    let _end_point = Point3::new(0.5, 0.0, 0.0);
     let vector = Vector3::new(0.0, 1.0, 0.0);
     
     println!("Starting vector: ({:.1}, {:.1}, {:.1}) at ({:.1}, {:.1}, {:.1})", 
