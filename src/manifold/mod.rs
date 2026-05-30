@@ -55,9 +55,9 @@ impl Manifold {
         to_position: Point3<f32>,
         transform: Matrix4<f32>,
     ) -> Result<PortalId, String> {
-        let from = self.charts.get(&from_chart)
+        let _from = self.charts.get(&from_chart)
             .ok_or_else(|| format!("Chart {:?} not found", from_chart))?;
-        let to = self.charts.get(&to_chart)
+        let _to = self.charts.get(&to_chart)
             .ok_or_else(|| format!("Chart {:?} not found", to_chart))?;
         
         let id = PortalId(self.portals.len() as u32);

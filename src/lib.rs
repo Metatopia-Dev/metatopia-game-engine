@@ -17,7 +17,7 @@ pub mod manifold;
 pub use core::{Engine, EngineConfig, GameState};
 pub use ecs::{World, Entity, Component, Velocity, Renderable, Transform as EcsTransform, TransformSystem, PortalTransitionSystem};
 pub use graphics::{Renderer, RenderContext, Color, Mesh, Vertex, Camera, camera::FPSCameraController};
-pub use input::{InputManager, InputEvent, KeyCode, MouseButton};
+pub use input::{InputManager, InputEvent, KeyCode, MouseButton, GamepadButton, GamepadAxis};
 pub use math::{Vec2, Vec3, Mat4, Transform};
 pub use resources::{ResourceManager, AssetLoader};
 pub use time::{Time, Timer};
@@ -30,7 +30,7 @@ pub mod prelude {
                          Transform as EcsTransform, TransformSystem, PortalTransitionSystem};
     pub use crate::graphics::{Renderer, RenderContext, Color, Mesh, Vertex,
                               Camera, camera::FPSCameraController};
-    pub use crate::input::{InputManager, InputEvent, KeyCode, MouseButton};
+    pub use crate::input::{InputManager, InputEvent, KeyCode, MouseButton, GamepadButton, GamepadAxis};
     pub use crate::math::{Vec2, Vec3, Mat4, Transform};
     pub use crate::resources::{ResourceManager, AssetLoader};
     pub use crate::time::{Time, Timer};

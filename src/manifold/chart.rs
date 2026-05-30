@@ -182,7 +182,7 @@ impl Chart {
     }
     
     /// Apply boundary wrapping to coordinates
-    pub fn wrap_coordinates(&self, mut local: LocalCoordinate) -> LocalCoordinate {
+    pub fn wrap_coordinates(&self, local: LocalCoordinate) -> LocalCoordinate {
         let point = local.to_point();
         
         match self.bounds.wrap_mode {

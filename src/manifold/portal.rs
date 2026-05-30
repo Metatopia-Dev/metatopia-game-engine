@@ -217,6 +217,7 @@ impl Portal {
 }
 
 /// Portal renderer for visualizing portal edges and transitions
+#[allow(dead_code)]
 pub struct PortalRenderer {
     edge_color: [f32; 4],
     ripple_effect: bool,

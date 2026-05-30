@@ -241,7 +241,7 @@ impl System for TransformSystem {
         let entities = world.query::<Transform>();
         for entity in entities {
             // Update transform positions based on manifold rules
-            if let Some(transform) = world.get_component_mut::<Transform>(entity) {
+            if let Some(_transform) = world.get_component_mut::<Transform>(entity) {
                 // Wrap coordinates if needed
                 // This would interact with the manifold system
             }

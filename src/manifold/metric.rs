@@ -29,7 +29,7 @@ impl MetricTensor {
     }
     
     /// Create spherical metric
-    pub fn spherical(radius: f32, theta: f32, phi: f32) -> Self {
+    pub fn spherical(radius: f32, theta: f32, _phi: f32) -> Self {
         let r2 = radius * radius;
         let sin_theta = theta.sin();
         let sin2_theta = sin_theta * sin_theta;
@@ -87,7 +87,7 @@ pub struct ChristoffelSymbols {
 impl ChristoffelSymbols {
     pub fn from_metric(metric: &MetricTensor) -> Self {
         // Simplified - full computation would involve metric derivatives
-        let mut gamma = [[[0.0; 3]; 3]; 3];
+        let gamma = [[[0.0; 3]; 3]; 3];
         
         // For hyperbolic geometry in Poincaré disk
         if metric.curvature < 0.0 {
@@ -99,7 +99,7 @@ impl ChristoffelSymbols {
     }
     
     /// Apply Christoffel symbols to compute geodesic acceleration
-    pub fn geodesic_acceleration(&self, position: Vector3<f32>, velocity: Vector3<f32>) -> Vector3<f32> {
+    pub fn geodesic_acceleration(&self, _position: Vector3<f32>, velocity: Vector3<f32>) -> Vector3<f32> {
         let mut accel = Vector3::new(0.0, 0.0, 0.0);
         
         for i in 0..3 {

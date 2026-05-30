@@ -126,7 +126,7 @@ impl Geodesic {
         
         for i in 0..=steps {
             let t = i as f32 / steps as f32;
-            let theta = angle * t;
+            let _theta = angle * t;
             
             // Slerp on sphere
             let a = (1.0 - t) * angle;
@@ -143,7 +143,7 @@ impl Geodesic {
             // Tangent is perpendicular to radius
             let tangent = if i < steps {
                 let next_t = (i + 1) as f32 / steps as f32;
-                let next_theta = angle * next_t;
+                let _next_theta = angle * next_t;
                 let next = if angle.abs() > 0.001 {
                     let sin_angle = angle.sin();
                     (start_norm * (1.0 - next_t) * angle.sin() + end_norm * next_t * angle.sin()) / sin_angle
@@ -165,7 +165,7 @@ impl Geodesic {
     fn hyperbolic_geodesic(
         start: Point3<f32>,
         end: Point3<f32>,
-        metric: &Metric,
+        _metric: &Metric,
         steps: usize,
     ) -> GeodesicPath {
         let mut path = GeodesicPath::new(GeometryType::Hyperbolic);

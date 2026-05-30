@@ -41,3 +41,19 @@ rand = "0.8"
 [[example]]
 name = "basic_game"
 path = "examples/basic_game.rs"
+
+[[example]]
+name = "basic_graphics"
+path = "examples/basic_graphics.rs"
+
+[[example]]
+name = "pest_control_sim"
+path = "examples/pest_control_sim.rs"
+
+[[example]]
+name = "simple_demo"
+path = "examples/simple_demo.rs"
+
+[[example]]
+name = "vr_netflix_hyperbolic"
+path = "examples/vr_netflix_hyperbolic.rs"

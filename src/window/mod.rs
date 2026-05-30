@@ -2,7 +2,7 @@
 
 use winit::{
     event::{Event, WindowEvent as WinitWindowEvent},
-    event_loop::{ControlFlow, EventLoop, EventLoopBuilder},
+    event_loop::{EventLoop, EventLoopBuilder},
     window::{Window as WinitWindow, WindowBuilder as WinitWindowBuilder},
     dpi::LogicalSize,
 };

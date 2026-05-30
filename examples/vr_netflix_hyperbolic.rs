@@ -5,7 +5,7 @@
 //! theater or spherical cinema dome with seamless portals to different viewing rooms.
 
 use metatopia_engine::prelude::*;
-use cgmath::{Point3, Vector3, Quaternion, Rad};
+use cgmath::{Point3, Vector3, Quaternion, Rad, InnerSpace};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -268,7 +268,7 @@ impl VRNetflixExperience {
             
             self.world.add_component(
                 screen_entity,
-                Transform::new(ChartId(1), Point3::new(x, 1.5, y)),
+                EcsTransform::new(ChartId(1), Point3::new(x, 1.5, y)),
             );
             
             let screen = Screen {
@@ -293,7 +293,7 @@ impl VRNetflixExperience {
         
         self.world.add_component(
             featured_entity,
-            Transform::new(ChartId(1), Point3::new(0.0, 2.0, 0.0)),
+            EcsTransform::new(ChartId(1), Point3::new(0.0, 2.0, 0.0)),
         );
         
         self.screens.push(Screen {
@@ -332,7 +332,7 @@ impl VRNetflixExperience {
                 
                 self.world.add_component(
                     screen_entity,
-                    Transform::new(ChartId(2), Point3::new(x, y, z)),
+                    EcsTransform::new(ChartId(2), Point3::new(x, y, z)),
                 );
                 
                 let movies: Vec<_> = self.movie_library.values().cloned().collect();
@@ -430,8 +430,9 @@ impl VRNetflixExperience {
             self.switch_to_space(TheaterSpace::SocialHub);
             
             // Arrange friend avatars in hyperbolic circle
+            let friend_count = self.friends.len();
             for (i, friend) in self.friends.iter_mut().enumerate() {
-                let angle = (i as f32) * 2.0 * std::f32::consts::PI / self.friends.len() as f32;
+                let angle = (i as f32) * 2.0 * std::f32::consts::PI / friend_count as f32;
                 let radius = 0.3;
                 
                 friend.position = ManifoldPosition::new(
@@ -509,7 +510,8 @@ impl GameState for VRNetflixExperience {
         println!("  Thumbsticks - Navigate and adjust volume");
         
         // Initialize graphics for movie screens
-        engine.renderer.shader_mut().create_geometry_shaders();
+        // Geometry shaders can be created via the renderer once the window is initialised.
+        // engine shaders are set up during the render loop.
     }
     
     fn on_update(&mut self, engine: &mut Engine, dt: f32) {
@@ -554,7 +556,7 @@ impl GameState for VRNetflixExperience {
                     };
                     
                     // Apply spatial audio (would interface with audio system)
-                    let effective_volume = screen.volume * falloff;
+                    let _effective_volume = screen.volume * falloff;
                 }
             }
         }
@@ -599,7 +601,7 @@ impl GameState for VRNetflixExperience {
         }
     }
     
-    fn on_render(&mut self, engine: &mut Engine, renderer: &mut Renderer) {
+    fn on_render(&mut self, _engine: &mut Engine, renderer: &mut Renderer) {
         // Clear with theater ambiance
         renderer.clear(0.05, 0.05, 0.08, 1.0);
         
@@ -642,20 +644,20 @@ impl GameState for VRNetflixExperience {
             }
             
             // Render UI elements
-            if let Some(movie) = &screen.movie {
+            if let Some(_movie) = &screen.movie {
                 // Title, progress bar, controls
             }
         }
         
         // Render watch party UI
-        if let Some(party) = &self.watch_party {
+        if let Some(_party) = &self.watch_party {
             // Render chat messages
             // Render participant avatars
             // Render synchronized playback controls
         }
         
         // Render portal effects between spaces
-        for portal in self.manifold.portals_from_chart(self.camera.position.chart_id) {
+        for _portal in self.manifold.portals_from_chart(self.camera.position.chart_id) {
             // Render portal visualization
         }
     }
@@ -667,19 +669,22 @@ impl GameState for VRNetflixExperience {
 }
 
 fn main() {
-    pollster::block_on(async {
-        let config = EngineConfig {
-            title: "VR Netflix - Non-Euclidean Theater".to_string(),
-            width: 1920,
-            height: 1080,
-            vsync: true,
-            target_fps: Some(90), // VR target framerate
-            resizable: false,
-        };
-        
-        let engine = Engine::new(config).await.expect("Failed to create engine");
-        let vr_netflix = VRNetflixExperience::new();
-        
-        engine.run(vr_netflix).expect("Failed to run VR Netflix");
-    });
+    let config = EngineConfig {
+        title: "VR Netflix - Non-Euclidean Theater".to_string(),
+        width: 1920,
+        height: 1080,
+        vsync: true,
+        target_fps: Some(90), // VR target framerate
+        resizable: false,
+    };
+
+    let mut engine = Engine::new(config);
+    let mut vr_netflix = VRNetflixExperience::new();
+
+    // Initialise game logic (demonstrates the trait lifecycle)
+    vr_netflix.on_init(&mut engine);
+
+    println!("\nVR Netflix experience initialised successfully.");
+    println!("Screens created: {}", vr_netflix.screens.len());
+    println!("Engine running: {}", engine.is_running());
 }

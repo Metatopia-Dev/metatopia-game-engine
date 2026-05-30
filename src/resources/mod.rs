@@ -28,11 +28,11 @@ impl<T> ResourceHandle<T> {
         }
     }
     
-    pub fn read(&self) -> std::sync::RwLockReadGuard<T> {
+    pub fn read(&self) -> std::sync::RwLockReadGuard<'_, T> {
         self.data.read().unwrap()
     }
     
-    pub fn write(&self) -> std::sync::RwLockWriteGuard<T> {
+    pub fn write(&self) -> std::sync::RwLockWriteGuard<'_, T> {
         self.data.write().unwrap()
     }
 }
@@ -65,6 +65,7 @@ impl ResourceStorage {
             .downcast_ref::<T>()
     }
     
+    #[allow(dead_code)]
     fn get_mut<T: Any + Send + Sync + 'static>(&mut self, id: &str) -> Option<&mut T> {
         let type_id = TypeId::of::<T>();
         self.resources

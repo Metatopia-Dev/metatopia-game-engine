@@ -146,7 +146,7 @@ impl Renderer {
     }
     
     /// Get a render pass for the current frame
-    pub fn begin_render_pass(&mut self) -> Option<RenderPass> {
+    pub fn begin_render_pass(&mut self) -> Option<RenderPass<'_>> {
         self.current_frame.as_mut().map(|frame| {
             frame.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
