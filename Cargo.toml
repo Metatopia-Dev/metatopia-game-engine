@@ -35,6 +35,9 @@ instant = "0.1"
 # Random number generation (for examples)
 rand = "0.8"
 
+# Audio
+rodio = "0.17"
+
 [dev-dependencies]
 # For tests
 

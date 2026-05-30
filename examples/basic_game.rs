@@ -17,6 +17,8 @@ use winit::{
 use std::sync::{Arc, RwLock};
 use cgmath::{InnerSpace, Point3, Vector3, Matrix4, Deg, perspective};
 use wgpu::util::DeviceExt;
+use rodio::{OutputStream, OutputStreamHandle, Sink, Source};
+use std::time::Duration;
 
 // ─── GPU Uniforms ──────────────────────────────────────────────────────────
 
@@ -47,6 +49,185 @@ struct SceneUniform {
     orb2_pos: [f32; 4],
     orb3_pos: [f32; 4],
     interaction: [f32; 4],
+}
+
+// ─── Sound Events & Procedural Audio ───────────────────────────────────────
+
+#[derive(Debug, Clone)]
+enum SoundEvent {
+    Bounce(f32),        // intensity 0.0–1.0
+    OrbCollect(u32),    // count collected so far
+    OrbSmash,           // sphere smashed an orb
+    Portal,             // geometry transition
+    QuantumKick,
+}
+
+struct GameAudio {
+    _stream: OutputStream,
+    handle: OutputStreamHandle,
+    ambient_sink: Sink,
+    current_drone: u32,
+    last_bounce: f32,
+}
+
+impl GameAudio {
+    fn new() -> Option<Self> {
+        let (stream, handle) = OutputStream::try_default().ok()?;
+        let ambient = Sink::try_new(&handle).ok()?;
+        ambient.set_volume(0.0);
+        Some(Self {
+            _stream: stream,
+            handle,
+            ambient_sink: ambient,
+            current_drone: 99, // force initial update
+            last_bounce: -1.0,
+        })
+    }
+
+    /// Ambient drone that shifts with geometry type
+    fn update_ambient(&mut self, space_type: u32) {
+        if space_type == self.current_drone { return; }
+        self.current_drone = space_type;
+        self.ambient_sink.stop();
+        self.ambient_sink = Sink::try_new(&self.handle).unwrap();
+        self.ambient_sink.set_volume(0.06);
+
+        let (f1, f2, f3) = match space_type {
+            1 => (73.4, 110.0, 146.8),    // Hyperbolic: dark minor cluster
+            2 => (146.8, 220.0, 330.0),    // Spherical: warm major triad
+            _ => (110.0, 165.0, 220.0),    // Euclidean: clean fifth + octave
+        };
+
+        // Layer 3 sine waves for a rich drone
+        let s1 = rodio::source::SineWave::new(f1)
+            .amplify(0.5)
+            .fade_in(Duration::from_secs(2));
+        let s2 = rodio::source::SineWave::new(f2)
+            .amplify(0.3)
+            .fade_in(Duration::from_secs(2));
+        let s3 = rodio::source::SineWave::new(f3)
+            .amplify(0.15)
+            .fade_in(Duration::from_secs(3));
+
+        // Mix by playing on separate sinks (rodio appends sequentially on one sink)
+        self.ambient_sink.append(s1);
+        // Additional layers on separate sinks
+        if let Ok(s) = Sink::try_new(&self.handle) {
+            s.set_volume(0.04);
+            s.append(s2);
+            s.detach();
+        }
+        if let Ok(s) = Sink::try_new(&self.handle) {
+            s.set_volume(0.025);
+            s.append(s3);
+            s.detach();
+        }
+    }
+
+    /// Short low-frequency thud on sphere bounce
+    fn play_bounce(&mut self, intensity: f32, time: f32) {
+        if time - self.last_bounce < 0.08 { return; }
+        self.last_bounce = time;
+        let vol = (intensity * 0.6).min(0.5);
+        if let Ok(s) = Sink::try_new(&self.handle) {
+            s.set_volume(vol);
+            let freq = 55.0 + intensity * 30.0;
+            let thud = rodio::source::SineWave::new(freq)
+                .take_duration(Duration::from_millis(60));
+            let sub = rodio::source::SineWave::new(freq * 0.5)
+                .take_duration(Duration::from_millis(90))
+                .amplify(0.6);
+            s.append(thud);
+            s.append(sub);
+            s.detach();
+        }
+    }
+
+    /// Bright ascending chime on orb collection
+    fn play_chime(&self, count: u32) {
+        let base = 660.0 + count as f32 * 110.0; // pitch rises with each orb
+        if let Ok(s) = Sink::try_new(&self.handle) {
+            s.set_volume(0.25);
+            let note1 = rodio::source::SineWave::new(base)
+                .take_duration(Duration::from_millis(120))
+                .fade_in(Duration::from_millis(5));
+            let note2 = rodio::source::SineWave::new(base * 1.25) // major third up
+                .take_duration(Duration::from_millis(180))
+                .fade_in(Duration::from_millis(5));
+            let note3 = rodio::source::SineWave::new(base * 1.5) // perfect fifth
+                .take_duration(Duration::from_millis(250))
+                .fade_in(Duration::from_millis(10));
+            s.append(note1);
+            s.append(note2);
+            s.append(note3);
+            s.detach();
+        }
+    }
+
+    /// Impact + sparkle on sphere-smash orb collection
+    fn play_smash(&self) {
+        if let Ok(s) = Sink::try_new(&self.handle) {
+            s.set_volume(0.35);
+            // Low impact
+            let hit = rodio::source::SineWave::new(80.0)
+                .take_duration(Duration::from_millis(50));
+            // High sparkle
+            let spark1 = rodio::source::SineWave::new(1200.0)
+                .take_duration(Duration::from_millis(40));
+            let spark2 = rodio::source::SineWave::new(1800.0)
+                .take_duration(Duration::from_millis(60))
+                .amplify(0.6);
+            s.append(hit);
+            s.append(spark1);
+            s.append(spark2);
+            s.detach();
+        }
+    }
+
+    /// Rising frequency sweep on portal transition
+    fn play_portal(&self) {
+        if let Ok(s) = Sink::try_new(&self.handle) {
+            s.set_volume(0.3);
+            for i in 0..12 {
+                let freq = 150.0 + i as f32 * 80.0;
+                let vol = 1.0 - (i as f32 / 12.0) * 0.6;
+                let tone = rodio::source::SineWave::new(freq)
+                    .take_duration(Duration::from_millis(40))
+                    .amplify(vol);
+                s.append(tone);
+            }
+            s.detach();
+        }
+    }
+
+    /// Brief electronic chirp on quantum kick
+    fn play_zap(&self) {
+        if let Ok(s) = Sink::try_new(&self.handle) {
+            s.set_volume(0.12);
+            let z1 = rodio::source::SineWave::new(2200.0)
+                .take_duration(Duration::from_millis(15));
+            let z2 = rodio::source::SineWave::new(1400.0)
+                .take_duration(Duration::from_millis(25))
+                .amplify(0.7);
+            s.append(z1);
+            s.append(z2);
+            s.detach();
+        }
+    }
+
+    /// Process all queued sound events
+    fn process(&mut self, events: &[SoundEvent], space_type: u32, time: f32) {
+        self.update_ambient(space_type);
+        for ev in events {
+            match ev {
+                SoundEvent::Bounce(intensity) => self.play_bounce(*intensity, time),
+                SoundEvent::OrbCollect(count) => self.play_chime(*count),
+                SoundEvent::OrbSmash => self.play_smash(),
+                SoundEvent::Portal => self.play_portal(),
+                SoundEvent::QuantumKick => self.play_zap(),
+            }
+        }
+    }
 }
 
 // ─── Physics Objects ───────────────────────────────────────────────────────
@@ -140,6 +321,7 @@ struct NonEuclideanDemo {
     space_type: u32,
     frame_count: u32,
     noise_seed: f32,
+    sound_events: Vec<SoundEvent>,
 }
 
 impl NonEuclideanDemo {
@@ -181,6 +363,7 @@ impl NonEuclideanDemo {
             space_type: 0,
             frame_count: 0,
             noise_seed: 0.0,
+            sound_events: Vec::new(),
         }
     }
 
@@ -220,6 +403,7 @@ impl NonEuclideanDemo {
                 angle.sin() * kick_strength,
             );
             self.sphere.velocity += kick;
+            self.sound_events.push(SoundEvent::QuantumKick);
         }
     }
 
@@ -255,21 +439,41 @@ impl NonEuclideanDemo {
 
         // ── 4. Boundary collisions (space-dependent restitution) ──
         if self.sphere.position.y < floor_y {
+            let impact = self.sphere.velocity.y.abs();
             self.sphere.position.y = floor_y;
             self.sphere.velocity.y = -self.sphere.velocity.y * phys.restitution;
             self.sphere.velocity.x *= phys.friction;
             self.sphere.velocity.z *= phys.friction;
+            if impact > 1.5 { self.sound_events.push(SoundEvent::Bounce((impact / 8.0).min(1.0))); }
         }
         if self.sphere.position.y > ceil_y {
+            let impact = self.sphere.velocity.y.abs();
             self.sphere.position.y = ceil_y;
             self.sphere.velocity.y = -self.sphere.velocity.y * phys.restitution;
+            if impact > 2.0 { self.sound_events.push(SoundEvent::Bounce((impact / 10.0).min(1.0))); }
         }
 
         let wall = room - self.sphere.radius;
-        if self.sphere.position.x >  wall { self.sphere.position.x =  wall; self.sphere.velocity.x = -self.sphere.velocity.x * phys.restitution; }
-        if self.sphere.position.x < -wall { self.sphere.position.x = -wall; self.sphere.velocity.x = -self.sphere.velocity.x * phys.restitution; }
-        if self.sphere.position.z >  wall { self.sphere.position.z =  wall; self.sphere.velocity.z = -self.sphere.velocity.z * phys.restitution; }
-        if self.sphere.position.z < -wall { self.sphere.position.z = -wall; self.sphere.velocity.z = -self.sphere.velocity.z * phys.restitution; }
+        if self.sphere.position.x >  wall {
+            let impact = self.sphere.velocity.x.abs();
+            self.sphere.position.x =  wall; self.sphere.velocity.x = -self.sphere.velocity.x * phys.restitution;
+            if impact > 2.0 { self.sound_events.push(SoundEvent::Bounce((impact / 10.0).min(1.0))); }
+        }
+        if self.sphere.position.x < -wall {
+            let impact = self.sphere.velocity.x.abs();
+            self.sphere.position.x = -wall; self.sphere.velocity.x = -self.sphere.velocity.x * phys.restitution;
+            if impact > 2.0 { self.sound_events.push(SoundEvent::Bounce((impact / 10.0).min(1.0))); }
+        }
+        if self.sphere.position.z >  wall {
+            let impact = self.sphere.velocity.z.abs();
+            self.sphere.position.z =  wall; self.sphere.velocity.z = -self.sphere.velocity.z * phys.restitution;
+            if impact > 2.0 { self.sound_events.push(SoundEvent::Bounce((impact / 10.0).min(1.0))); }
+        }
+        if self.sphere.position.z < -wall {
+            let impact = self.sphere.velocity.z.abs();
+            self.sphere.position.z = -wall; self.sphere.velocity.z = -self.sphere.velocity.z * phys.restitution;
+            if impact > 2.0 { self.sound_events.push(SoundEvent::Bounce((impact / 10.0).min(1.0))); }
+        }
 
         // ── 5. Drag (space-dependent) ─────────────────────────────
         self.sphere.velocity *= phys.drag;
@@ -343,6 +547,7 @@ impl NonEuclideanDemo {
             if dist < collect_radius {
                 orb.active = false;
                 self.collected += 1;
+                self.sound_events.push(SoundEvent::OrbCollect(self.collected));
                 let phys_label = SpacePhysics::for_type(self.space_type).label;
                 println!("✨ Orb collected! ({}/4) [{}]", self.collected, phys_label);
                 if self.collected == 4 { println!("🎉 All orbs collected in {} space!", phys_label); }
@@ -365,6 +570,7 @@ impl NonEuclideanDemo {
                 // Sphere bounces off the orb
                 let bounce = -to_orb / dist;
                 self.sphere.velocity += bounce * 4.0;
+                self.sound_events.push(SoundEvent::OrbSmash);
                 println!("💥 Sphere smashed orb! ({}/4)", self.collected);
                 if self.collected == 4 { println!("🎉 All orbs collected!"); }
             }
@@ -386,6 +592,7 @@ impl NonEuclideanDemo {
 
                 // Update cached space type
                 self.space_type = self.resolve_space_type();
+                self.sound_events.push(SoundEvent::Portal);
                 let phys = SpacePhysics::for_type(self.space_type);
                 println!("🌀 Portal → Chart {:?} | Physics: {} | G={:.0} bounce={:.0}%",
                     new_chart, phys.label, phys.gravity, phys.restitution * 100.0);
@@ -573,6 +780,9 @@ async fn run() {
     surface.configure(&device, &config);
 
     let mut demo = NonEuclideanDemo::new();
+    let mut audio = GameAudio::new();
+    if audio.is_some() { println!("🔊 Audio system initialized"); }
+    else { println!("⚠️  No audio device found – continuing without sound"); }
 
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("NE Shader"),
@@ -661,6 +871,13 @@ async fn run() {
                     let elapsed = start_time.elapsed().as_secs_f32();
 
                     demo.update(dt, elapsed);
+
+                    // Process audio events
+                    if let Some(ref mut a) = audio {
+                        a.process(&demo.sound_events, demo.space_type, elapsed);
+                    }
+                    demo.sound_events.clear();
+
                     demo.update_camera_uniform(config.width as f32 / config.height as f32);
                     demo.update_scene_uniform(elapsed);
 
