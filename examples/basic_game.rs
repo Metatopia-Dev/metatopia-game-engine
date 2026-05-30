@@ -138,6 +138,8 @@ struct NonEuclideanDemo {
     orbs: [OrbState; 4],
     collected: u32,
     space_type: u32,
+    frame_count: u32,
+    noise_seed: f32,
 }
 
 impl NonEuclideanDemo {
@@ -177,6 +179,8 @@ impl NonEuclideanDemo {
             orbs: default_orb_positions(),
             collected: 0,
             space_type: 0,
+            frame_count: 0,
+            noise_seed: 0.0,
         }
     }
 
@@ -184,10 +188,39 @@ impl NonEuclideanDemo {
 
     fn update(&mut self, dt: f32, time: f32) {
         self.check_portal_transitions();
+
+        // Per-frame non-deterministic seed (LCG-style)
+        self.frame_count = self.frame_count.wrapping_add(1);
+        self.noise_seed = (self.frame_count.wrapping_mul(1103515245).wrapping_add(12345) >> 16) as f32
+            / 65536.0;
+
         let phys = SpacePhysics::for_type(self.space_type);
         self.update_sphere_physics(dt, &phys);
+        self.apply_quantum_kick(time);
         self.update_orbs(time, &phys);
         self.check_sphere_orb_collisions();
+    }
+
+    /// Non-deterministic random impulse on the sphere ("quantum kick")
+    fn apply_quantum_kick(&mut self, time: f32) {
+        // Probability of kick varies by geometry
+        let (kick_chance, kick_strength) = match self.space_type {
+            1 => (0.02_f32, 3.5_f32),   // Hyperbolic: frequent strong kicks
+            2 => (0.005, 1.0),           // Spherical: rare weak kicks
+            _ => (0.008, 2.0),           // Euclidean: moderate
+        };
+
+        // Pseudo-random test using hash of frame + time
+        let h = ((self.frame_count as f32 * 0.1031).fract() * 33.33).fract();
+        if h < kick_chance {
+            let angle = time * 17.3 + self.noise_seed * 100.0;
+            let kick = Vector3::new(
+                angle.cos() * kick_strength,
+                kick_strength * 0.7,
+                angle.sin() * kick_strength,
+            );
+            self.sphere.velocity += kick;
+        }
     }
 
     // ── Geometry-Dependent Sphere Physics ──────────────────────────
@@ -403,25 +436,32 @@ impl NonEuclideanDemo {
     fn update_scene_uniform(&mut self, time: f32) {
         let st = self.space_type;
 
-        // ── Lights ────────────────────────────────────────────────
+        // ── Stochastic light flicker ──────────────────────────────
+        // Non-deterministic intensity modulation using hash-like trig
+        let flicker = |freq: f32, phase: f32| -> f32 {
+            let a = (time * freq + phase).sin();
+            let b = (time * freq * 1.618 + phase * 2.3).cos();
+            1.0 + a * b * 0.12  // ±12% random-looking flicker
+        };
+
         let sd = Vector3::new(0.3_f32, 0.8, 0.4).normalize();
-        self.scene_uniform.sun_direction = [sd.x, sd.y, sd.z, 3.0];
+        self.scene_uniform.sun_direction = [sd.x, sd.y, sd.z, 3.0 * flicker(7.3, 0.0)];
         self.scene_uniform.sun_color     = [1.0, 0.95, 0.85, 0.0];
         self.scene_uniform.light0_pos    = [0.0, 4.5, 0.0, 15.0];
-        self.scene_uniform.light0_color  = [1.0, 0.92, 0.80, 40.0];
+        self.scene_uniform.light0_color  = [1.0, 0.92, 0.80, 40.0 * flicker(11.7, 1.0)];
 
         let (ar, ag, ab) = match st { 1 => (0.6,0.3,1.0), 2 => (1.0,0.5,0.15), _ => (0.3,0.6,1.0) };
         self.scene_uniform.light1_pos   = [6.0*(time*0.4).cos(), 2.0, 6.0*(time*0.4).sin(), 10.0];
-        self.scene_uniform.light1_color = [ar, ag, ab, 25.0];
+        self.scene_uniform.light1_color = [ar, ag, ab, 25.0 * flicker(13.1, 2.5)];
 
         let pulse = (time * 1.2).sin() * 0.3 + 0.7;
         self.scene_uniform.light2_pos   = [-4.0, 1.0, -4.0, 8.0];
-        self.scene_uniform.light2_color = [0.9, 0.85, 0.7, 15.0 * pulse];
+        self.scene_uniform.light2_color = [0.9, 0.85, 0.7, 15.0 * pulse * flicker(9.3, 4.0)];
 
         let (pr,pg,pb) = match st { 1=>(0.8,0.3,1.0), 2=>(1.0,0.6,0.2), _=>(0.4,0.6,1.0) };
         let pp = (time * 2.0).sin() * 0.25 + 0.75;
         self.scene_uniform.light3_pos   = [9.5, 1.5, 0.0, 6.0];
-        self.scene_uniform.light3_color = [pr, pg, pb, 20.0 * pp];
+        self.scene_uniform.light3_color = [pr, pg, pb, 20.0 * pp * flicker(17.7, 6.0)];
 
         self.scene_uniform.params = [time, 1.8, 3.5, 4.0];
 
@@ -442,7 +482,7 @@ impl NonEuclideanDemo {
                   if o.active { 1.0 } else { 0.0 }];
         }
 
-        self.scene_uniform.interaction = [self.collected as f32, 4.0, sd2, 0.0];
+        self.scene_uniform.interaction = [self.collected as f32, 4.0, sd2, self.noise_seed];
     }
 
     // ── Input (speed varies by geometry) ───────────────────────────
