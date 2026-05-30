@@ -1,601 +1,700 @@
-//! Pest Control Simulator - Euclidean Space Game
-//! 
-//! Play as an exterminator dealing with various pests in homes and buildings.
-//! Uses standard Euclidean geometry for realistic physics and movement.
+//! Pest Control Simulator — Playable FPS
+//!
+//! Hunt pests in a kitchen! Each level spawns different bugs.
+//! Left-click to spray, 1/2 to switch tools, R to restart level.
 
 use metatopia_engine::prelude::*;
-use cgmath::{Point3, Vector3, InnerSpace};
-use std::collections::HashMap;
-use rand::Rng;
+use winit::{
+    event::{Event, WindowEvent as WinitWindowEvent, ElementState, DeviceEvent, MouseButton},
+    keyboard::{KeyCode, PhysicalKey},
+    event_loop::{ControlFlow, EventLoop},
+    window::WindowBuilder as WinitWindowBuilder,
+};
+use std::sync::{Arc, RwLock};
+use cgmath::{InnerSpace, Point3, Vector3, Matrix4, Deg, perspective};
+use wgpu::util::DeviceExt;
+
+// ─── GPU Uniforms ──────────────────────────────────────────────────────────
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct CameraUniform {
+    view_proj: [[f32; 4]; 4],
+    view_position: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct SceneUniform {
+    sun_direction: [f32; 4],
+    sun_color: [f32; 4],
+    light0_pos: [f32; 4],
+    light0_color: [f32; 4],
+    light1_pos: [f32; 4],
+    light1_color: [f32; 4],
+    params: [f32; 4],
+    game_info: [f32; 4],
+    pest0: [f32; 4],
+    pest1: [f32; 4],
+    pest2: [f32; 4],
+    pest3: [f32; 4],
+    pest4: [f32; 4],
+    pest5: [f32; 4],
+    pest6: [f32; 4],
+    pest7: [f32; 4],
+    pest_flash: [f32; 4],
+    pest_flash2: [f32; 4],
+}
+
+// ─── Game Objects ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum PestType {
-    Cockroach,
-    Ant,
-    Spider,
-    Rat,
-    Wasp,
-}
+enum PestAI { Wandering, Fleeing, Hiding, Dead }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum ToolType {
-    SprayBottle,
-    BaitStation,
-    Trap,
-    VacuumGun,
-    Fumigator,
-}
-
-#[derive(Clone)]
-struct Pest {
-    pest_type: PestType,
+#[derive(Debug, Clone)]
+struct PestState {
+    position: Vector3<f32>,
+    velocity: Vector3<f32>,
+    pest_type: u32,         // 1=cockroach, 2=ant, 3=spider, 4=rat, 5=wasp
     health: f32,
+    max_health: f32,
     speed: f32,
-    ai_state: PestAIState,
     detection_radius: f32,
+    ai_state: PestAI,
+    hit_flash: f32,
+    wander_timer: f32,
+    rng: u32,
 }
 
-impl Component for Pest {
-    fn as_any(&self) -> &dyn std::any::Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
-}
-
-#[derive(Clone, Copy, Debug)]
-enum PestAIState {
-    Wandering,
-    Fleeing,
-    Hiding,
-    Attacking,
-    Dead,
-}
-
-#[derive(Clone)]
-struct Tool {
-    tool_type: ToolType,
-    ammo: u32,
-    max_ammo: u32,
+struct ToolState {
+    name: &'static str,
     range: f32,
     damage: f32,
     cooldown: f32,
-    last_used: f32,
+    ammo: u32,
+    max_ammo: u32,
+    last_fire: f32,
 }
 
-impl Component for Tool {
-    fn as_any(&self) -> &dyn std::any::Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+const LOCATION_NAMES: [&str; 6] = ["Kitchen", "Bathroom", "Basement", "Attic", "Garden", "Restaurant"];
+
+// ─── Helpers ───────────────────────────────────────────────────────────────
+
+const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
+fn create_depth_texture(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Depth"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+        format: DEPTH_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    }).create_view(&wgpu::TextureViewDescriptor::default())
 }
 
-#[derive(Clone)]
-struct Infestation {
-    severity: f32,  // 0.0 to 1.0
-    location_type: LocationType,
-    pests_remaining: u32,
-    pests_eliminated: u32,
+fn next_rand(state: &mut u32) -> f32 {
+    *state = state.wrapping_mul(1103515245).wrapping_add(12345);
+    ((*state >> 16) & 0xFFFF) as f32 / 65536.0
 }
 
-impl Component for Infestation {
-    fn as_any(&self) -> &dyn std::any::Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+fn pest_radius(t: u32) -> f32 {
+    match t { 1 => 0.18, 2 => 0.10, 3 => 0.15, 4 => 0.35, 5 => 0.20, _ => 0.0 }
 }
 
-#[derive(Clone, Copy, Debug)]
-enum LocationType {
-    Kitchen,
-    Bathroom,
-    Basement,
-    Attic,
-    Garden,
-    Restaurant,
+fn pest_score(t: u32) -> u32 {
+    match t { 1 => 10, 2 => 5, 3 => 15, 4 => 25, 5 => 20, _ => 0 }
 }
 
-struct PestControlSimulator {
-    world: World,
-    player: Entity,
-    current_tool: ToolType,
+fn pest_name(t: u32) -> &'static str {
+    match t { 1 => "Cockroach", 2 => "Ant", 3 => "Spider", 4 => "Rat", 5 => "Wasp", _ => "?" }
+}
+
+fn pest_stats(t: u32) -> (f32, f32, f32) {
+    // (health, speed, detection_radius)
+    match t {
+        1 => (50.0, 3.0, 4.5),   // cockroach: fast, medium HP
+        2 => (15.0, 1.5, 3.0),   // ant: fragile, slow
+        3 => (35.0, 2.5, 5.0),   // spider: mid, lurks
+        4 => (100.0, 2.0, 6.0),  // rat: tough, medium speed
+        5 => (40.0, 4.0, 8.0),   // wasp: medium, fast, detects far
+        _ => (10.0, 1.0, 3.0),
+    }
+}
+
+// ─── Game State ────────────────────────────────────────────────────────────
+
+struct PestControlGame {
+    _manifold: Arc<RwLock<Manifold>>,
+    camera_position: Point3<f32>,
+    camera_rotation: (f32, f32),
+    camera_uniform: CameraUniform,
+    camera_buffer: Option<wgpu::Buffer>,
+    camera_bind_group: Option<wgpu::BindGroup>,
+    scene_uniform: SceneUniform,
+    scene_buffer: Option<wgpu::Buffer>,
+    scene_bind_group: Option<wgpu::BindGroup>,
+    mouse_sensitivity: f32,
+    pests: Vec<PestState>,
+    tools: Vec<ToolState>,
+    current_tool: usize,
     score: u32,
     level: u32,
     time_remaining: f32,
-    active_pests: Vec<Entity>,
-    camera: Camera,
-    camera_controller: FPSCameraController,
-    current_location: LocationType,
-    infestation_level: f32,
-    tools_inventory: HashMap<ToolType, Tool>,
+    firing_flash: f32,
+    frame_count: u32,
+    rng_state: u32,
 }
 
-impl PestControlSimulator {
+impl PestControlGame {
     fn new() -> Self {
-        let mut world = World::new();
-        
-        // Create player entity
-        let player = world.create_entity();
-        world.add_component(
-            player,
-            EcsTransform::new(ChartId(0), Point3::new(0.0, 1.7, 0.0)),
-        );
-        
-        // Initialize tools inventory
-        let mut tools_inventory = HashMap::new();
-        
-        tools_inventory.insert(
-            ToolType::SprayBottle,
-            Tool {
-                tool_type: ToolType::SprayBottle,
-                ammo: 100,
-                max_ammo: 100,
-                range: 3.0,
-                damage: 25.0,
-                cooldown: 0.2,
-                last_used: 0.0,
+        let manifold = Manifold::new();
+        let mut game = Self {
+            _manifold: Arc::new(RwLock::new(manifold)),
+            camera_position: Point3::new(0.0, 1.7, -4.0),
+            camera_rotation: (0.0, 0.0),
+            camera_uniform: CameraUniform { view_proj: [[0.0; 4]; 4], view_position: [0.0; 4] },
+            camera_buffer: None, camera_bind_group: None,
+            scene_uniform: SceneUniform {
+                sun_direction: [0.0;4], sun_color: [0.0;4],
+                light0_pos: [0.0;4], light0_color: [0.0;4],
+                light1_pos: [0.0;4], light1_color: [0.0;4],
+                params: [0.0;4], game_info: [0.0;4],
+                pest0: [0.0;4], pest1: [0.0;4], pest2: [0.0;4], pest3: [0.0;4],
+                pest4: [0.0;4], pest5: [0.0;4], pest6: [0.0;4], pest7: [0.0;4],
+                pest_flash: [0.0;4], pest_flash2: [0.0;4],
             },
-        );
-        
-        tools_inventory.insert(
-            ToolType::VacuumGun,
-            Tool {
-                tool_type: ToolType::VacuumGun,
-                ammo: 50,
-                max_ammo: 50,
-                range: 5.0,
-                damage: 100.0,
-                cooldown: 0.5,
-                last_used: 0.0,
-            },
-        );
-        
-        tools_inventory.insert(
-            ToolType::BaitStation,
-            Tool {
-                tool_type: ToolType::BaitStation,
-                ammo: 10,
-                max_ammo: 10,
-                range: 1.0,
-                damage: 0.0, // Bait works over time
-                cooldown: 1.0,
-                last_used: 0.0,
-            },
-        );
-        
-        // Create camera
-        let camera = Camera::new(
-            ChartId(0),
-            Point3::new(0.0, 1.7, 0.0),
-            Point3::new(0.0, 1.7, 1.0),
-            1280.0 / 720.0,
-        );
-        
-        let camera_controller = FPSCameraController::new();
-        
-        Self {
-            world,
-            player,
-            current_tool: ToolType::SprayBottle,
+            scene_buffer: None, scene_bind_group: None,
+            mouse_sensitivity: 0.002,
+            pests: Vec::new(),
+            tools: vec![
+                ToolState { name: "Spray", range: 4.0, damage: 30.0, cooldown: 0.15,
+                    ammo: 100, max_ammo: 100, last_fire: -10.0 },
+                ToolState { name: "Vacuum", range: 8.0, damage: 100.0, cooldown: 0.6,
+                    ammo: 20, max_ammo: 20, last_fire: -10.0 },
+            ],
+            current_tool: 0,
             score: 0,
             level: 1,
-            time_remaining: 300.0, // 5 minutes per level
-            active_pests: Vec::new(),
-            camera,
-            camera_controller,
-            current_location: LocationType::Kitchen,
-            infestation_level: 0.3,
-            tools_inventory,
-        }
-    }
-    
-    fn spawn_pest(&mut self, pest_type: PestType, position: Point3<f32>) {
-        let pest_entity = self.world.create_entity();
-        
-        let (health, speed, detection_radius) = match pest_type {
-            PestType::Cockroach => (50.0, 3.0, 5.0),
-            PestType::Ant => (10.0, 1.0, 3.0),
-            PestType::Spider => (30.0, 2.0, 4.0),
-            PestType::Rat => (100.0, 4.0, 8.0),
-            PestType::Wasp => (40.0, 5.0, 10.0),
+            time_remaining: 120.0,
+            firing_flash: 0.0,
+            frame_count: 0,
+            rng_state: 42,
         };
-        
-        self.world.add_component(
-            pest_entity,
-            EcsTransform::new(ChartId(0), position),
-        );
-        
-        self.world.add_component(
-            pest_entity,
-            Pest {
+        game.spawn_level();
+        game
+    }
+
+    // ── Level Spawning ─────────────────────────────────────────────
+
+    fn spawn_level(&mut self) {
+        self.pests.clear();
+        let count = (5 + self.level * 2).min(8) as usize;
+        let location = ((self.level - 1) % 6) as usize;
+
+        println!("\n🏠 Level {} — {} | {} pests incoming!",
+            self.level, LOCATION_NAMES[location], count);
+
+        for i in 0..count {
+            let mut seed = self.level * 1000 + i as u32 * 137 + 7;
+            let pest_type = self.pick_pest(location, &mut seed);
+            let (health, speed, detect) = pest_stats(pest_type);
+            let x = next_rand(&mut seed) * 10.0 - 5.0;
+            let z = next_rand(&mut seed) * 10.0 - 5.0;
+            let y = if pest_type == 5 {
+                1.0 + next_rand(&mut seed) * 1.5
+            } else {
+                pest_radius(pest_type)
+            };
+
+            self.pests.push(PestState {
+                position: Vector3::new(x, y, z),
+                velocity: Vector3::new(0.0, 0.0, 0.0),
                 pest_type,
-                health,
-                speed,
-                ai_state: PestAIState::Wandering,
-                detection_radius,
-            },
-        );
-        
-        self.world.add_component(
-            pest_entity,
-            Velocity {
-                linear: Vector3::new(0.0, 0.0, 0.0),
-                angular: Vector3::new(0.0, 0.0, 0.0),
-            },
-        );
-        
-        self.world.add_component(
-            pest_entity,
-            Renderable {
-                mesh_id: format!("pest_{:?}", pest_type),
-                shader_id: "pest_shader".to_string(),
-                visible: true,
-            },
-        );
-        
-        self.active_pests.push(pest_entity);
-    }
-    
-    fn spawn_infestation(&mut self, location: LocationType) {
-        self.current_location = location;
-        
-        // Clear existing pests
-        for pest in self.active_pests.clone() {
-            self.world.destroy_entity(pest);
+                health, max_health: health,
+                speed, detection_radius: detect,
+                ai_state: PestAI::Wandering,
+                hit_flash: 0.0,
+                wander_timer: next_rand(&mut seed) * 2.0 + 1.0,
+                rng: seed,
+            });
         }
-        self.active_pests.clear();
-        
-        // Spawn pests based on location and level
-        let mut rng = rand::thread_rng();
-        let pest_count = (5 + self.level * 2).min(20);
-        
-        for _ in 0..pest_count {
-            let pest_type = match location {
-                LocationType::Kitchen => {
-                    match rng.gen_range(0..3) {
-                        0 => PestType::Cockroach,
-                        1 => PestType::Ant,
-                        _ => PestType::Rat,
-                    }
-                }
-                LocationType::Bathroom => {
-                    match rng.gen_range(0..2) {
-                        0 => PestType::Cockroach,
-                        _ => PestType::Spider,
-                    }
-                }
-                LocationType::Basement => PestType::Rat,
-                LocationType::Attic => {
-                    match rng.gen_range(0..2) {
-                        0 => PestType::Spider,
-                        _ => PestType::Wasp,
-                    }
-                }
-                LocationType::Garden => PestType::Wasp,
-                LocationType::Restaurant => PestType::Cockroach,
-            };
-            
-            let x = rng.gen_range(-10.0..10.0);
-            let z = rng.gen_range(-10.0..10.0);
-            let y = match pest_type {
-                PestType::Wasp => rng.gen_range(1.0..3.0),
-                _ => 0.1,
-            };
-            
-            self.spawn_pest(pest_type, Point3::new(x, y, z));
-        }
-        
-        // Create infestation entity
-        let infestation = self.world.create_entity();
-        self.world.add_component(
-            infestation,
-            Infestation {
-                severity: self.infestation_level,
-                location_type: location,
-                pests_remaining: pest_count,
-                pests_eliminated: 0,
-            },
-        );
-    }
-    
-    fn use_tool(&mut self) {
-        // Get tool data first to avoid mutable borrow conflict
-        let tool_data = if let Some(tool) = self.tools_inventory.get_mut(&self.current_tool) {
-            if tool.ammo > 0 && self.time_remaining - tool.last_used > tool.cooldown {
-                tool.ammo -= 1;
-                tool.last_used = self.time_remaining;
-                Some((tool.tool_type, tool.range, tool.damage))
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        
-        // Apply tool effect
-        if let Some((tool_type, range, damage)) = tool_data {
-            match tool_type {
-                ToolType::SprayBottle | ToolType::VacuumGun => {
-                    self.spray_area(range, damage);
-                }
-                ToolType::BaitStation => {
-                    self.place_bait();
-                }
-                ToolType::Trap => {
-                    self.place_trap();
-                }
-                ToolType::Fumigator => {
-                    self.fumigate_area();
-                }
-            }
-        }
-    }
-    
-    fn spray_area(&mut self, range: f32, damage: f32) {
-        let camera_pos = self.camera.position.local.to_point();
-        let camera_forward = self.camera.forward();
-        
-        // Check for pest hits
-        for pest_entity in self.active_pests.clone() {
-            if let Some(pest_transform) = self.world.get_component::<EcsTransform>(pest_entity) {
-                let pest_pos = pest_transform.position.local.to_point();
-                let to_pest = pest_pos - camera_pos;
-                let distance = (pest_pos - camera_pos).magnitude();
-                
-                if distance <= range {
-                    // Check if pest is in front of player
-                    let to_pest_normalized = Vector3::new(to_pest.x, to_pest.y, to_pest.z).normalize();
-                    let dot = to_pest_normalized.dot(camera_forward);
-                    if dot > 0.7 {  // ~45 degree cone
-                        if let Some(pest) = self.world.get_component_mut::<Pest>(pest_entity) {
-                            pest.health -= damage;
-                            if pest.health <= 0.0 {
-                                pest.ai_state = PestAIState::Dead;
-                                self.eliminate_pest(pest_entity);
-                            } else {
-                                pest.ai_state = PestAIState::Fleeing;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    fn place_bait(&mut self) {
-        // Bait attracts pests then eliminates them over time
-        println!("Bait station placed!");
-    }
-    
-    fn place_trap(&mut self) {
-        // Trap catches pests that walk over it
-        println!("Trap placed!");
-    }
-    
-    fn fumigate_area(&mut self) {
-        // Fumigation affects entire room
-        println!("Fumigating area!");
-        for pest_entity in self.active_pests.clone() {
-            self.eliminate_pest(pest_entity);
-        }
-    }
-    
-    fn eliminate_pest(&mut self, pest: Entity) {
-        self.world.destroy_entity(pest);
-        if let Some(pos) = self.active_pests.iter().position(|&e| e == pest) {
-            self.active_pests.remove(pos);
-        }
-        self.score += 10;
-        
-        // Check if level complete
-        if self.active_pests.is_empty() {
-            self.complete_level();
-        }
-    }
-    
-    fn complete_level(&mut self) {
-        println!("Level {} Complete! Score: {}", self.level, self.score);
-        self.level += 1;
-        self.infestation_level = (self.infestation_level + 0.1).min(1.0);
-        self.time_remaining = 300.0;
-        
-        // Spawn next infestation
-        let locations = [
-            LocationType::Kitchen,
-            LocationType::Bathroom,
-            LocationType::Basement,
-            LocationType::Attic,
-            LocationType::Garden,
-            LocationType::Restaurant,
-        ];
-        let mut rng = rand::thread_rng();
-        let next_location = locations[rng.gen_range(0..locations.len())];
-        self.spawn_infestation(next_location);
-    }
-    
-    fn update_pest_ai(&mut self, _dt: f32) {
-        let player_pos = self.camera.position.local.to_point();
-        
-        for pest_entity in self.active_pests.clone() {
-            let pest_pos = if let Some(transform) = self.world.get_component::<EcsTransform>(pest_entity) {
-                transform.position.local.to_point()
-            } else {
-                continue;
-            };
-            
-            let distance_to_player = (pest_pos - player_pos).magnitude();
-            
-            // First update AI state
-            let new_ai_state = if let Some(pest) = self.world.get_component_mut::<Pest>(pest_entity) {
-                let mut new_state = pest.ai_state;
-                
-                // Update AI state based on player proximity
-                match pest.ai_state {
-                    PestAIState::Wandering => {
-                        if distance_to_player < pest.detection_radius {
-                            new_state = PestAIState::Fleeing;
-                        }
-                    }
-                    PestAIState::Fleeing => {
-                        if distance_to_player > pest.detection_radius * 2.0 {
-                            new_state = PestAIState::Hiding;
-                        }
-                    }
-                    PestAIState::Hiding => {
-                        if distance_to_player > pest.detection_radius * 3.0 {
-                            new_state = PestAIState::Wandering;
-                        }
-                    }
-                    _ => {}
-                }
-                
-                pest.ai_state = new_state;
-                Some((new_state, pest.speed))
-            } else {
-                None
-            };
-            
-            // Then update velocity based on the new AI state
-            if let Some((ai_state, speed)) = new_ai_state {
-                if let Some(velocity) = self.world.get_component_mut::<Velocity>(pest_entity) {
-                    match ai_state {
-                        PestAIState::Wandering => {
-                            // Random movement
-                            let mut rng = rand::thread_rng();
-                            velocity.linear = Vector3::new(
-                                rng.gen_range(-1.0..1.0),
-                                0.0,
-                                rng.gen_range(-1.0..1.0),
-                            ).normalize() * speed;
-                        }
-                        PestAIState::Fleeing => {
-                            // Move away from player
-                            let flee_dir = Vector3::new(
-                                pest_pos.x - player_pos.x,
-                                0.0,
-                                pest_pos.z - player_pos.z,
-                            ).normalize();
-                            velocity.linear = flee_dir * speed * 1.5;
-                        }
-                        PestAIState::Hiding => {
-                            velocity.linear = Vector3::new(0.0, 0.0, 0.0);
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
-}
 
-impl GameState for PestControlSimulator {
-    fn on_init(&mut self, _engine: &mut Engine) {
-        println!("=== PEST CONTROL SIMULATOR ===");
-        println!("Eliminate all pests to complete each level!");
-        println!("\nControls:");
-        println!("  WASD - Move");
-        println!("  Mouse - Look around");
-        println!("  Left Click - Use current tool");
-        println!("  1-5 - Switch tools");
-        println!("  R - Reload/Refill");
-        println!("  ESC - Quit");
-        
-        // Start first level
-        self.spawn_infestation(LocationType::Kitchen);
+        // Refill tools
+        for t in &mut self.tools { t.ammo = t.max_ammo; }
+        self.time_remaining = 120.0;
     }
-    
-    fn on_update(&mut self, engine: &mut Engine, dt: f32) {
-        // Update camera
-        self.camera_controller.update(&mut self.camera, &engine.input, dt);
-        
-        // Update timer
-        self.time_remaining -= dt;
-        if self.time_remaining <= 0.0 {
-            println!("Time's up! Game Over. Final Score: {}", self.score);
-            engine.quit();
+
+    fn pick_pest(&mut self, location: usize, seed: &mut u32) -> u32 {
+        let r = next_rand(seed);
+        match location {
+            0 => if r < 0.4 { 1 } else if r < 0.7 { 2 } else { 4 },  // Kitchen
+            1 => if r < 0.5 { 1 } else { 3 },                          // Bathroom
+            2 => 4,                                                      // Basement: rats
+            3 => if r < 0.5 { 3 } else { 5 },                          // Attic
+            4 => 5,                                                      // Garden: wasps
+            5 => if r < 0.6 { 1 } else { 2 },                          // Restaurant
+            _ => 1,
         }
-        
-        // Tool switching
-        use KeyCode::*;
-        if engine.input.is_key_pressed(Num1) {
-            self.current_tool = ToolType::SprayBottle;
-        } else if engine.input.is_key_pressed(Num2) {
-            self.current_tool = ToolType::VacuumGun;
-        } else if engine.input.is_key_pressed(Num3) {
-            self.current_tool = ToolType::BaitStation;
+    }
+
+    // ── Main Update ────────────────────────────────────────────────
+
+    fn update(&mut self, dt: f32, _time: f32) {
+        self.frame_count = self.frame_count.wrapping_add(1);
+        self.firing_flash = (self.firing_flash - dt * 6.0).max(0.0);
+
+        // Decay hit flash
+        for pest in &mut self.pests {
+            pest.hit_flash = (pest.hit_flash - dt * 4.0).max(0.0);
         }
-        
-        // Use tool
-        if engine.input.is_mouse_button_pressed(MouseButton::Left) {
-            self.use_tool();
-        }
-        
-        // Update pest AI
+
         self.update_pest_ai(dt);
-        
-        // Update world systems
-        self.world.update(dt);
-        
-        // Update HUD info
-        if engine.time.frame_count() % 60 == 0 {
-            println!("Level: {} | Score: {} | Time: {:.0}s | Pests: {} | Tool: {:?} ({})", 
-                self.level, 
-                self.score, 
-                self.time_remaining,
-                self.active_pests.len(),
-                self.current_tool,
-                self.tools_inventory.get(&self.current_tool).map_or(0, |t| t.ammo)
-            );
-        }
-        
-        // Quit on ESC
-        if engine.input.is_key_pressed(KeyCode::Escape) {
-            engine.quit();
+        self.time_remaining -= dt;
+    }
+
+    // ── Pest AI ────────────────────────────────────────────────────
+
+    fn update_pest_ai(&mut self, dt: f32) {
+        let cam = Vector3::new(self.camera_position.x, self.camera_position.y, self.camera_position.z);
+
+        for pest in &mut self.pests {
+            if pest.ai_state == PestAI::Dead { continue; }
+
+            pest.wander_timer -= dt;
+            let to_player = cam - pest.position;
+            let dist = to_player.magnitude();
+
+            match pest.ai_state {
+                PestAI::Wandering => {
+                    if dist < pest.detection_radius {
+                        pest.ai_state = PestAI::Fleeing;
+                    }
+                    if pest.wander_timer <= 0.0 {
+                        pest.wander_timer = next_rand(&mut pest.rng) * 2.0 + 1.0;
+                        let angle = next_rand(&mut pest.rng) * std::f32::consts::TAU;
+                        pest.velocity = Vector3::new(angle.cos(), 0.0, angle.sin()) * pest.speed;
+                    }
+                }
+                PestAI::Fleeing => {
+                    if dist > 0.1 {
+                        let flee = Vector3::new(-to_player.x, 0.0, -to_player.z);
+                        if flee.magnitude() > 0.01 {
+                            pest.velocity = flee.normalize() * pest.speed * 1.8;
+                        }
+                    }
+                    if dist > pest.detection_radius * 2.5 {
+                        pest.ai_state = PestAI::Hiding;
+                        pest.wander_timer = 2.0 + next_rand(&mut pest.rng) * 2.0;
+                    }
+                }
+                PestAI::Hiding => {
+                    pest.velocity *= 0.92;
+                    if pest.wander_timer <= 0.0 && dist > pest.detection_radius * 1.5 {
+                        pest.ai_state = PestAI::Wandering;
+                        pest.wander_timer = 1.5;
+                    }
+                }
+                PestAI::Dead => {}
+            }
+
+            pest.position += pest.velocity * dt;
+
+            // Keep ground pests on floor
+            if pest.pest_type != 5 {
+                pest.position.y = pest_radius(pest.pest_type);
+            } else {
+                // Wasp bobs
+                pest.position.y = pest.position.y.clamp(0.8, 2.5);
+                pest.velocity.y = (next_rand(&mut pest.rng) - 0.5) * 1.5;
+            }
+
+            // Wall bounds
+            let wall = 5.5;
+            if pest.position.x > wall { pest.position.x = wall; pest.velocity.x = -pest.velocity.x; }
+            if pest.position.x < -wall { pest.position.x = -wall; pest.velocity.x = -pest.velocity.x; }
+            if pest.position.z > wall { pest.position.z = wall; pest.velocity.z = -pest.velocity.z; }
+            if pest.position.z < -wall { pest.position.z = -wall; pest.velocity.z = -pest.velocity.z; }
         }
     }
-    
-    fn on_render(&mut self, _engine: &mut Engine, renderer: &mut Renderer) {
-        renderer.clear(0.8, 0.8, 0.7, 1.0); // Light interior color
-        
-        // Render room based on location type
-        match self.current_location {
-            LocationType::Kitchen => {
-                // Render kitchen environment
-            }
-            LocationType::Bathroom => {
-                // Render bathroom environment
-            }
-            _ => {
-                // Render generic room
+
+    // ── Firing ─────────────────────────────────────────────────────
+
+    fn try_fire(&mut self, elapsed: f32) {
+        let tool = &self.tools[self.current_tool];
+        if tool.ammo == 0 {
+            println!("🔴 Out of ammo! Press R to reload");
+            return;
+        }
+        if elapsed - tool.last_fire < tool.cooldown { return; }
+
+        let tool_range = tool.range;
+        let tool_damage = tool.damage;
+        let tool_name = tool.name;
+        self.tools[self.current_tool].ammo -= 1;
+        self.tools[self.current_tool].last_fire = elapsed;
+        self.firing_flash = 1.0;
+
+        // Raycast from camera
+        let fwd = self.get_forward_vector();
+        let origin = Vector3::new(self.camera_position.x, self.camera_position.y, self.camera_position.z);
+
+        let mut best_idx: Option<usize> = None;
+        let mut best_t = f32::MAX;
+
+        for (i, pest) in self.pests.iter().enumerate() {
+            if pest.ai_state == PestAI::Dead { continue; }
+
+            let to_pest = pest.position - origin;
+            let t = to_pest.dot(fwd);
+            if t < 0.0 || t > tool_range { continue; }
+
+            let closest = origin + fwd * t;
+            let miss_dist = (closest - pest.position).magnitude();
+            let hit_radius = pest_radius(pest.pest_type) * 2.5; // generous hitbox
+
+            if miss_dist < hit_radius && t < best_t {
+                best_t = t;
+                best_idx = Some(i);
             }
         }
-        
-        // Render pests
-        for _pest_entity in &self.active_pests {
-            // Render pest models
+
+        if let Some(idx) = best_idx {
+            let pest = &mut self.pests[idx];
+            pest.health -= tool_damage;
+            pest.hit_flash = 1.0;
+            pest.ai_state = PestAI::Fleeing;
+
+            if pest.health <= 0.0 {
+                pest.ai_state = PestAI::Dead;
+                let pts = pest_score(pest.pest_type);
+                self.score += pts;
+                println!("💀 {} eliminated! +{} pts (Score: {})",
+                    pest_name(pest.pest_type), pts, self.score);
+
+                // Check level complete
+                let alive = self.pests.iter().filter(|p| p.ai_state != PestAI::Dead).count();
+                if alive == 0 {
+                    let bonus = (self.time_remaining as u32) * 2;
+                    self.score += bonus;
+                    println!("🎉 Level {} Complete! Time bonus: +{} | Total: {}",
+                        self.level, bonus, self.score);
+                    self.level += 1;
+                    self.spawn_level();
+                }
+            } else {
+                println!("🎯 Hit {} with {}! ({:.0}/{:.0} HP)",
+                    pest_name(pest.pest_type), tool_name, pest.health, pest.max_health);
+            }
         }
-        
-        // Render tool in hand
-        // Render HUD
     }
-    
-    fn on_cleanup(&mut self, _engine: &mut Engine) {
-        println!("Thanks for playing Pest Control Simulator!");
-        println!("Final Score: {}", self.score);
+
+    // ── Camera ─────────────────────────────────────────────────────
+
+    fn get_forward_vector(&self) -> Vector3<f32> {
+        let (yaw, pitch) = self.camera_rotation;
+        Vector3::new(yaw.cos() * pitch.cos(), pitch.sin(), yaw.sin() * pitch.cos())
+    }
+
+    fn update_camera_uniform(&mut self, aspect: f32) {
+        let fwd = self.get_forward_vector();
+        let tgt = self.camera_position + fwd;
+        let view = Matrix4::<f32>::look_at_rh(
+            self.camera_position, Point3::new(tgt.x, tgt.y, tgt.z), Vector3::unit_y(),
+        );
+        let proj = perspective(Deg(70.0), aspect, 0.05, 100.0);
+        self.camera_uniform.view_proj = (proj * view).into();
+        self.camera_uniform.view_position = [
+            self.camera_position.x, self.camera_position.y, self.camera_position.z, 0.0,
+        ];
+    }
+
+    fn update_scene_uniform(&mut self, time: f32) {
+        // ── Kitchen lighting ──────────────────────────────────────
+        let sd = Vector3::new(0.2_f32, 0.9, 0.3).normalize();
+        self.scene_uniform.sun_direction = [sd.x, sd.y, sd.z, 2.0];
+        self.scene_uniform.sun_color     = [1.0, 0.95, 0.85, 0.0];
+        self.scene_uniform.light0_pos    = [0.0, 2.8, 0.0, 10.0];
+        self.scene_uniform.light0_color  = [1.0, 0.92, 0.75, 30.0]; // warm overhead
+        self.scene_uniform.light1_pos    = [0.0, 2.0, -5.5, 8.0];
+        self.scene_uniform.light1_color  = [0.7, 0.8, 1.0, 15.0]; // cool window
+
+        self.scene_uniform.params = [time, 2.2, 4.0, self.firing_flash];
+
+        let alive = self.pests.iter().filter(|p| p.ai_state != PestAI::Dead).count();
+        self.scene_uniform.game_info = [
+            self.score as f32, self.level as f32, alive as f32, self.time_remaining,
+        ];
+
+        // ── Pest uniforms ─────────────────────────────────────────
+        let pest_slots: [&mut [f32; 4]; 8] = [
+            &mut self.scene_uniform.pest0, &mut self.scene_uniform.pest1,
+            &mut self.scene_uniform.pest2, &mut self.scene_uniform.pest3,
+            &mut self.scene_uniform.pest4, &mut self.scene_uniform.pest5,
+            &mut self.scene_uniform.pest6, &mut self.scene_uniform.pest7,
+        ];
+        for (i, slot) in pest_slots.into_iter().enumerate() {
+            if i < self.pests.len() && self.pests[i].ai_state != PestAI::Dead {
+                let p = &self.pests[i];
+                *slot = [p.position.x, p.position.y, p.position.z, p.pest_type as f32];
+            } else {
+                *slot = [0.0, -10.0, 0.0, 0.0]; // hidden below floor
+            }
+        }
+
+        // Hit flash values
+        let mut flash = [0.0_f32; 8];
+        for (i, p) in self.pests.iter().enumerate().take(8) {
+            flash[i] = p.hit_flash;
+        }
+        self.scene_uniform.pest_flash  = [flash[0], flash[1], flash[2], flash[3]];
+        self.scene_uniform.pest_flash2 = [flash[4], flash[5], flash[6], flash[7]];
+    }
+
+    // ── Input ──────────────────────────────────────────────────────
+
+    fn handle_keyboard(&mut self, key: KeyCode, pressed: bool) {
+        if !pressed { return; }
+        let speed = 0.12;
+        let fwd = self.get_forward_vector();
+        let right = Vector3::new(-fwd.z, 0.0, fwd.x).normalize();
+
+        match key {
+            KeyCode::KeyW       => self.camera_position += fwd * speed,
+            KeyCode::KeyS       => self.camera_position -= fwd * speed,
+            KeyCode::KeyA       => self.camera_position -= right * speed,
+            KeyCode::KeyD       => self.camera_position += right * speed,
+            KeyCode::Space      => self.camera_position.y = (self.camera_position.y + speed).min(2.5),
+            KeyCode::ShiftLeft  => self.camera_position.y = (self.camera_position.y - speed).max(0.8),
+            KeyCode::Digit1     => { self.current_tool = 0; println!("🔫 Spray Bottle selected"); }
+            KeyCode::Digit2     => { self.current_tool = 1; println!("🔫 Vacuum Gun selected"); }
+            KeyCode::KeyR       => {
+                for t in &mut self.tools { t.ammo = t.max_ammo; }
+                println!("🔄 Tools reloaded!");
+            }
+            _ => {}
+        }
+
+        // Clamp to room bounds
+        self.camera_position.x = self.camera_position.x.clamp(-5.5, 5.5);
+        self.camera_position.z = self.camera_position.z.clamp(-5.5, 5.5);
+    }
+
+    fn handle_mouse_motion(&mut self, dx: f64, dy: f64) {
+        self.camera_rotation.0 += dx as f32 * self.mouse_sensitivity;
+        self.camera_rotation.1 = (self.camera_rotation.1 - dy as f32 * self.mouse_sensitivity).clamp(-1.5, 1.5);
     }
 }
 
-fn main() {
-    let config = EngineConfig {
-        title: "Pest Control Simulator".to_string(),
-        width: 1280,
-        height: 720,
-        vsync: true,
-        target_fps: Some(60),
-        resizable: false,
-    };
+// ─── Main ──────────────────────────────────────────────────────────────────
 
-    let mut engine = Engine::new(config);
-    let mut game = PestControlSimulator::new();
+async fn run() {
+    env_logger::init();
 
-    // Initialise game logic (demonstrates the trait lifecycle)
-    game.on_init(&mut engine);
+    println!("🪳 PEST CONTROL SIMULATOR 🪳");
+    println!("═══════════════════════════════");
+    println!("Controls:");
+    println!("  WASD         – Move");
+    println!("  Mouse        – Look");
+    println!("  Left Click   – Fire tool");
+    println!("  1            – Spray Bottle (fast, close range)");
+    println!("  2            – Vacuum Gun (powerful, long range, limited ammo)");
+    println!("  R            – Reload all tools");
+    println!("  Space/Shift  – Up / Down");
+    println!("  ESC          – Quit");
+    println!();
+    println!("Pests: 🪳Cockroach 🐜Ant 🕷Spider 🐀Rat 🐝Wasp");
+    println!("Aim at pests and click to eliminate them!");
 
-    // In a full runtime, the engine event loop would drive update/render.
-    // This demo shows the game state and ECS setup working correctly.
-    println!("\nPest Control Simulator initialised successfully.");
-    println!("Engine running: {}", engine.is_running());
+    let event_loop = EventLoop::new().unwrap();
+    let window = WinitWindowBuilder::new()
+        .with_title("Pest Control Simulator")
+        .with_inner_size(winit::dpi::LogicalSize::new(1280, 720))
+        .build(&event_loop).unwrap();
+    let window = Arc::new(window);
+    window.set_cursor_grab(winit::window::CursorGrabMode::Confined)
+        .or_else(|_| window.set_cursor_grab(winit::window::CursorGrabMode::Locked)).ok();
+    window.set_cursor_visible(false);
+
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor { backends: wgpu::Backends::all(), ..Default::default() });
+    let surface = instance.create_surface(window.clone()).unwrap();
+    let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        compatible_surface: Some(&surface), force_fallback_adapter: false,
+    }).await.unwrap();
+    let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("PestControl"), required_features: wgpu::Features::empty(),
+        required_limits: wgpu::Limits::default(),
+    }, None).await.unwrap();
+
+    let size = window.inner_size();
+    let mut config = surface.get_default_config(&adapter, size.width, size.height).unwrap();
+    config.present_mode = wgpu::PresentMode::Fifo;
+    surface.configure(&device, &config);
+
+    let mut game = PestControlGame::new();
+
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Pest Shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/pest_control.wgsl").into()),
+    });
+
+    // Camera bind group
+    let cam_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Cam"), contents: bytemuck::cast_slice(&[game.camera_uniform]),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+    let cam_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("cam_bgl"),
+        entries: &[wgpu::BindGroupLayoutEntry { binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+            count: None }],
+    });
+    let cam_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("cam_bg"), layout: &cam_bgl,
+        entries: &[wgpu::BindGroupEntry { binding: 0, resource: cam_buf.as_entire_binding() }],
+    });
+    game.camera_buffer = Some(cam_buf); game.camera_bind_group = Some(cam_bg);
+
+    // Scene bind group
+    let scene_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Scene"), contents: bytemuck::cast_slice(&[game.scene_uniform]),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+    let scene_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("scene_bgl"),
+        entries: &[wgpu::BindGroupLayoutEntry { binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+            count: None }],
+    });
+    let scene_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("scene_bg"), layout: &scene_bgl,
+        entries: &[wgpu::BindGroupEntry { binding: 0, resource: scene_buf.as_entire_binding() }],
+    });
+    game.scene_buffer = Some(scene_buf); game.scene_bind_group = Some(scene_bg);
+
+    let mut depth_view = create_depth_texture(&device, config.width, config.height);
+
+    let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None, bind_group_layouts: &[&cam_bgl, &scene_bgl], push_constant_ranges: &[],
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: None, layout: Some(&pl),
+        vertex: wgpu::VertexState { module: &shader, entry_point: "vs_main", buffers: &[] },
+        fragment: Some(wgpu::FragmentState { module: &shader, entry_point: "fs_main",
+            targets: &[Some(wgpu::ColorTargetState { format: config.format,
+                blend: Some(wgpu::BlendState::REPLACE), write_mask: wgpu::ColorWrites::ALL })] }),
+        primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+        depth_stencil: Some(wgpu::DepthStencilState { format: DEPTH_FORMAT, depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: wgpu::StencilState::default(), bias: wgpu::DepthBiasState::default() }),
+        multisample: wgpu::MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
+        multiview: None,
+    });
+
+    let start_time = std::time::Instant::now();
+    let mut last_time = start_time;
+    let mut frame_count = 0u32;
+    let mut game_over = false;
+    const VERTS: u32 = 240; // 36 room + 192 pests + 12 crosshair
+
+    let _ = event_loop.run(move |event, target| {
+        target.set_control_flow(ControlFlow::Poll);
+        match event {
+            Event::WindowEvent { ref event, window_id } if window_id == window.id() => match event {
+                WinitWindowEvent::CloseRequested => target.exit(),
+                WinitWindowEvent::Resized(s) => {
+                    if s.width > 0 && s.height > 0 {
+                        config.width = s.width; config.height = s.height;
+                        surface.configure(&device, &config);
+                        depth_view = create_depth_texture(&device, config.width, config.height);
+                    }
+                }
+                WinitWindowEvent::KeyboardInput { event: key_event, .. } => {
+                    if let PhysicalKey::Code(kc) = key_event.physical_key {
+                        if kc == KeyCode::Escape { target.exit(); }
+                        else { game.handle_keyboard(kc, key_event.state == ElementState::Pressed); }
+                    }
+                }
+                WinitWindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+                    if !game_over {
+                        let elapsed = start_time.elapsed().as_secs_f32();
+                        game.try_fire(elapsed);
+                    }
+                }
+                WinitWindowEvent::RedrawRequested => {
+                    frame_count += 1;
+                    let now = std::time::Instant::now();
+                    let dt = (now - last_time).as_secs_f32().min(0.05);
+                    last_time = now;
+                    let elapsed = start_time.elapsed().as_secs_f32();
+
+                    if !game_over {
+                        game.update(dt, elapsed);
+
+                        if game.time_remaining <= 0.0 {
+                            game_over = true;
+                            println!("\n⏰ TIME'S UP! Game Over!");
+                            println!("══════════════════════════");
+                            println!("Final Score: {} | Reached Level: {}", game.score, game.level);
+                            println!("Press ESC to exit, R to restart");
+                        }
+                    }
+
+                    game.update_camera_uniform(config.width as f32 / config.height as f32);
+                    game.update_scene_uniform(elapsed);
+
+                    if let Some(ref b) = game.camera_buffer { queue.write_buffer(b, 0, bytemuck::cast_slice(&[game.camera_uniform])); }
+                    if let Some(ref b) = game.scene_buffer  { queue.write_buffer(b, 0, bytemuck::cast_slice(&[game.scene_uniform])); }
+
+                    let output = surface.get_current_texture().unwrap();
+                    let cv = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+                    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+                    {
+                        let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: None,
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: &cv, resolve_target: None,
+                                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(
+                                    wgpu::Color { r: 0.08, g: 0.07, b: 0.06, a: 1.0 }),
+                                    store: wgpu::StoreOp::Store },
+                            })],
+                            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                                view: &depth_view,
+                                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                                stencil_ops: None,
+                            }),
+                            occlusion_query_set: None, timestamp_writes: None,
+                        });
+                        rp.set_pipeline(&pipeline);
+                        if let Some(ref bg) = game.camera_bind_group { rp.set_bind_group(0, bg, &[]); }
+                        if let Some(ref bg) = game.scene_bind_group  { rp.set_bind_group(1, bg, &[]); }
+                        rp.draw(0..VERTS, 0..1);
+                    }
+                    queue.submit(std::iter::once(enc.finish()));
+                    output.present();
+
+                    // HUD
+                    if frame_count % 60 == 0 && !game_over {
+                        let alive = game.pests.iter().filter(|p| p.ai_state != PestAI::Dead).count();
+                        let t = &game.tools[game.current_tool];
+                        let fps = frame_count as f32 / elapsed;
+                        println!("Lv{} | 🏆{} | 🪳{} left | ⏱{:.0}s | 🔫{}({}) | {:.0}fps",
+                            game.level, game.score, alive,
+                            game.time_remaining, t.name, t.ammo, fps);
+                    }
+                    window.request_redraw();
+                }
+                _ => {}
+            },
+            Event::DeviceEvent { event: DeviceEvent::MouseMotion { delta }, .. } => {
+                game.handle_mouse_motion(delta.0, delta.1);
+            }
+            Event::AboutToWait => { window.request_redraw(); }
+            _ => {}
+        }
+    });
 }
+
+fn main() { pollster::block_on(run()); }
