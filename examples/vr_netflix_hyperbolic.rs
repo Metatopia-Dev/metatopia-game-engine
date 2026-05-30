@@ -1,690 +1,671 @@
-//! VR Netflix in Non-Euclidean Space
-//! 
-//! Experience infinite movie theaters in hyperbolic space where you can have
-//! unlimited screens without them overlapping. Navigate through a Poincaré disk
-//! theater or spherical cinema dome with seamless portals to different viewing rooms.
+//! VR Netflix — Hyperbolic Cinema
+//!
+//! GPU-rendered non-Euclidean movie theater with 5 viewing spaces,
+//! procedural audio drones, PBR screens, and Poincaré disk floor.
+//!
+//! Controls:
+//!   WASD         – Move camera
+//!   Mouse        – Look around
+//!   1–5          – Switch theater space
+//!   Left Click   – Play/pause selected screen
+//!   Tab          – Cycle selected screen
+//!   R            – Reset view
+//!   +/-          – Ambient brightness
+//!   Space/Shift  – Up / Down
+//!   ESC          – Quit
 
 use metatopia_engine::prelude::*;
-use cgmath::{Point3, Vector3, Quaternion, Rad, InnerSpace};
-use std::collections::HashMap;
+use winit::{
+    event::{Event, WindowEvent as WinitWindowEvent, ElementState, DeviceEvent, MouseButton},
+    keyboard::{KeyCode, PhysicalKey},
+    event_loop::{ControlFlow, EventLoop},
+    window::WindowBuilder as WinitWindowBuilder,
+};
+use std::sync::Arc;
+use wgpu::util::DeviceExt;
+use rodio::{OutputStream, OutputStreamHandle, Sink, Source};
+use std::time::Duration;
+
+// ─── GPU Uniform ───────────────────────────────────────────────────────────
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct TheaterUniform {
+    camera_pos: [f32; 4],       // xyz=pos, w=fov
+    camera_target: [f32; 4],    // xyz=target, w=time
+    resolution: [f32; 4],       // x=w, y=h, z=space_type, w=selected_screen
+    params: [f32; 4],           // x=screen_count, y=ambient, z=0, w=transition
+    screen0: [f32; 4],          // xyz=position, w=playing
+    screen1: [f32; 4],
+    screen2: [f32; 4],
+    screen3: [f32; 4],
+    screen4: [f32; 4],
+    screen5: [f32; 4],
+    screen6: [f32; 4],
+    screen7: [f32; 4],
+}
+
+// ─── Movie & Screen ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 struct Movie {
-    title: String,
-    genre: String,
-    duration: f32,
-    thumbnail_url: String,
-    video_url: String,
+    title: &'static str,
+    genre: &'static str,
     rating: f32,
     year: u32,
 }
 
-#[derive(Debug, Clone)]
-struct Screen {
-    entity: Entity,
-    movie: Option<Movie>,
-    position: ManifoldPosition,
-    size: (f32, f32),
+const MOVIES: &[Movie] = &[
+    Movie { title: "Inception",       genre: "Sci-Fi",     rating: 8.8, year: 2010 },
+    Movie { title: "Interstellar",    genre: "Sci-Fi",     rating: 8.6, year: 2014 },
+    Movie { title: "The Matrix",      genre: "Action",     rating: 8.7, year: 1999 },
+    Movie { title: "Spirited Away",   genre: "Animation",  rating: 8.6, year: 2001 },
+    Movie { title: "2001: A Space Odyssey", genre: "Sci-Fi", rating: 8.3, year: 1968 },
+    Movie { title: "Blade Runner",    genre: "Sci-Fi",     rating: 8.1, year: 1982 },
+    Movie { title: "Arrival",         genre: "Sci-Fi",     rating: 7.9, year: 2016 },
+    Movie { title: "TENET",           genre: "Action",     rating: 7.3, year: 2020 },
+];
+
+struct ScreenState {
+    position: [f32; 3],
+    movie_idx: usize,
     playing: bool,
-    current_time: f32,
-    volume: f32,
 }
+
+// ─── Theater Spaces ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum TheaterSpace {
-    HyperbolicLobby,    // Poincaré disk with infinite screens
-    SphericalDome,      // 360° viewing dome
-    EscherTheater,      // Impossible geometry with looping stairs
-    PersonalPocket,     // Your own curved pocket dimension
-    SocialHub,          // Shared viewing space with friends
+    HyperbolicLobby = 0,
+    SphericalDome   = 1,
+    EscherTheater   = 2,
+    PersonalPocket  = 3,
+    SocialHub       = 4,
 }
 
-struct VRNetflixExperience {
-    manifold: Manifold,
-    current_space: TheaterSpace,
-    screens: Vec<Screen>,
-    movie_library: HashMap<String, Movie>,
-    camera: Camera,
-    selected_screen: Option<usize>,
-    world: World,
-    user_preferences: UserPreferences,
-    friends: Vec<Friend>,
-    watch_party: Option<WatchParty>,
+impl TheaterSpace {
+    fn name(self) -> &'static str {
+        match self {
+            Self::HyperbolicLobby => "Hyperbolic Lobby",
+            Self::SphericalDome   => "Spherical Dome",
+            Self::EscherTheater   => "Escher Theater",
+            Self::PersonalPocket  => "Personal Pocket",
+            Self::SocialHub       => "Social Hub",
+        }
+    }
+    fn icon(self) -> &'static str {
+        match self {
+            Self::HyperbolicLobby => "🟣",
+            Self::SphericalDome   => "⭐",
+            Self::EscherTheater   => "🔄",
+            Self::PersonalPocket  => "🏠",
+            Self::SocialHub       => "👥",
+        }
+    }
 }
 
-#[derive(Clone)]
-struct UserPreferences {
-    preferred_distance: f32,
-    curved_screen: bool,
-    ambient_lighting: f32,
-    spatial_audio: bool,
-    auto_arrange: bool,
+// ─── Audio ─────────────────────────────────────────────────────────────────
+
+struct TheaterAudio {
+    _stream: OutputStream,
+    handle: OutputStreamHandle,
+    ambient_sink: Sink,
+    current_space: i32,
 }
 
-#[derive(Clone)]
-struct Friend {
-    name: String,
-    avatar: String,
-    position: ManifoldPosition,
-    watching: Option<String>,
+impl TheaterAudio {
+    fn new() -> Option<Self> {
+        let (stream, handle) = OutputStream::try_default().ok()?;
+        let ambient = Sink::try_new(&handle).ok()?;
+        ambient.set_volume(0.0);
+        Some(Self { _stream: stream, handle, ambient_sink: ambient, current_space: -1 })
+    }
+
+    fn update_space(&mut self, space: TheaterSpace) {
+        let idx = space as i32;
+        if idx == self.current_space { return; }
+        self.current_space = idx;
+        self.ambient_sink.stop();
+        self.ambient_sink = Sink::try_new(&self.handle).unwrap();
+        self.ambient_sink.set_volume(0.05);
+
+        let (f1, f2) = match space {
+            TheaterSpace::HyperbolicLobby => (65.4, 98.0),    // Dark C2 + G2
+            TheaterSpace::SphericalDome   => (130.8, 196.0),   // Celestial C3 + G3
+            TheaterSpace::EscherTheater   => (87.3, 116.5),    // Mysterious F2 + Bb2
+            TheaterSpace::PersonalPocket  => (110.0, 165.0),   // Warm A2 + E3
+            TheaterSpace::SocialHub       => (98.0, 146.8),    // Social G2 + D3
+        };
+
+        let s1 = rodio::source::SineWave::new(f1)
+            .amplify(0.4).fade_in(Duration::from_secs(3));
+        self.ambient_sink.append(s1);
+
+        if let Ok(s) = Sink::try_new(&self.handle) {
+            s.set_volume(0.035);
+            let s2 = rodio::source::SineWave::new(f2)
+                .amplify(0.25).fade_in(Duration::from_secs(4));
+            s.append(s2);
+            s.detach();
+        }
+        if let Ok(s) = Sink::try_new(&self.handle) {
+            s.set_volume(0.02);
+            let s3 = rodio::source::SineWave::new(f1 * 0.5)
+                .amplify(0.3).fade_in(Duration::from_secs(5));
+            s.append(s3);
+            s.detach();
+        }
+    }
+
+    fn play_transition(&self) {
+        if let Ok(s) = Sink::try_new(&self.handle) {
+            s.set_volume(0.25);
+            for i in 0..8 {
+                let freq = 200.0 + i as f32 * 100.0;
+                let tone = rodio::source::SineWave::new(freq)
+                    .take_duration(Duration::from_millis(35))
+                    .amplify(1.0 - i as f32 / 8.0);
+                s.append(tone);
+            }
+            s.detach();
+        }
+    }
+
+    fn play_select(&self) {
+        if let Ok(s) = Sink::try_new(&self.handle) {
+            s.set_volume(0.2);
+            let t = rodio::source::SineWave::new(660.0)
+                .take_duration(Duration::from_millis(50));
+            s.append(t);
+            s.detach();
+        }
+    }
+
+    fn play_toggle(&self) {
+        if let Ok(s) = Sink::try_new(&self.handle) {
+            s.set_volume(0.2);
+            let t1 = rodio::source::SineWave::new(440.0)
+                .take_duration(Duration::from_millis(60));
+            let t2 = rodio::source::SineWave::new(660.0)
+                .take_duration(Duration::from_millis(80));
+            s.append(t1);
+            s.append(t2);
+            s.detach();
+        }
+    }
 }
 
-#[derive(Clone)]
-struct WatchParty {
-    host: String,
-    movie: Movie,
-    participants: Vec<Friend>,
-    chat_messages: Vec<ChatMessage>,
+// ─── Main State ────────────────────────────────────────────────────────────
+
+struct VRTheater {
+    camera_pos: cgmath::Point3<f32>,
+    camera_rot: (f32, f32),
+    mouse_sensitivity: f32,
+    movement_speed: f32,
+    space: TheaterSpace,
+    screens: Vec<ScreenState>,
+    selected: usize,
+    ambient: f32,
+    transition: f32,
+    uniform: TheaterUniform,
+    buffer: Option<wgpu::Buffer>,
+    bind_group: Option<wgpu::BindGroup>,
 }
 
-#[derive(Clone)]
-struct ChatMessage {
-    sender: String,
-    message: String,
-    timestamp: f32,
-}
-
-impl VRNetflixExperience {
+impl VRTheater {
     fn new() -> Self {
-        let mut manifold = Manifold::new();
-        
-        // Create hyperbolic lobby space (Poincaré disk)
-        let hyperbolic_lobby = manifold.add_chart(GeometryType::Hyperbolic);
-        
-        // Create spherical dome theater
-        let spherical_dome = manifold.add_chart(GeometryType::Spherical);
-        
-        // Create Escher-like impossible theater
-        let escher_theater = manifold.add_chart(GeometryType::Custom);
-        
-        // Create personal pocket dimension (small hyperbolic space)
-        let personal_pocket = manifold.add_chart(GeometryType::Hyperbolic);
-        
-        // Connect spaces with portals
-        Self::create_theater_portals(&mut manifold, hyperbolic_lobby, spherical_dome, escher_theater, personal_pocket);
-        
-        // Initialize camera in hyperbolic lobby
-        let camera = Camera::new(
-            hyperbolic_lobby,
-            Point3::new(0.0, 1.7, 0.0),
-            Point3::new(0.0, 1.7, 0.5),
-            1280.0 / 720.0,
-        );
-        
-        let user_preferences = UserPreferences {
-            preferred_distance: 3.0,
-            curved_screen: true,
-            ambient_lighting: 0.3,
-            spatial_audio: true,
-            auto_arrange: true,
-        };
-        
-        let mut netflix = Self {
-            manifold,
-            current_space: TheaterSpace::HyperbolicLobby,
+        let mut t = Self {
+            camera_pos: cgmath::Point3::new(0.0, 1.7, -6.0),
+            camera_rot: (0.0, 0.0),
+            mouse_sensitivity: 0.002,
+            movement_speed: 0.12,
+            space: TheaterSpace::HyperbolicLobby,
             screens: Vec::new(),
-            movie_library: Self::load_movie_library(),
-            camera,
-            selected_screen: None,
-            world: World::new(),
-            user_preferences,
-            friends: Vec::new(),
-            watch_party: None,
+            selected: 0,
+            ambient: 0.6,
+            transition: 0.0,
+            uniform: TheaterUniform {
+                camera_pos: [0.0; 4],
+                camera_target: [0.0; 4],
+                resolution: [0.0; 4],
+                params: [0.0; 4],
+                screen0: [0.0, -100.0, 0.0, 0.0],
+                screen1: [0.0, -100.0, 0.0, 0.0],
+                screen2: [0.0, -100.0, 0.0, 0.0],
+                screen3: [0.0, -100.0, 0.0, 0.0],
+                screen4: [0.0, -100.0, 0.0, 0.0],
+                screen5: [0.0, -100.0, 0.0, 0.0],
+                screen6: [0.0, -100.0, 0.0, 0.0],
+                screen7: [0.0, -100.0, 0.0, 0.0],
+            },
+            buffer: None,
+            bind_group: None,
         };
-        
-        // Create initial screens in hyperbolic space
-        netflix.create_hyperbolic_theater();
-        
-        netflix
+        t.setup_space(TheaterSpace::HyperbolicLobby);
+        t
     }
-    
-    fn create_theater_portals(
-        manifold: &mut Manifold,
-        hyperbolic_lobby: ChartId,
-        spherical_dome: ChartId,
-        escher_theater: ChartId,
-        personal_pocket: ChartId,
-    ) {
-        // Portal from lobby to spherical dome
-        manifold.create_portal(
-            hyperbolic_lobby,
-            spherical_dome,
-            Point3::new(0.7, 0.0, 0.0),
-            Point3::new(0.0, -0.9, 0.0),
-            Mat4::from_scale(1.0),
-        ).unwrap();
-        
-        // Portal from lobby to Escher theater
-        manifold.create_portal(
-            hyperbolic_lobby,
-            escher_theater,
-            Point3::new(-0.7, 0.0, 0.0),
-            Point3::new(0.0, 0.0, 0.0),
-            Mat4::from_angle_y(Rad(90.0_f32.to_radians())),
-        ).unwrap();
-        
-        // Portal from lobby to personal pocket
-        manifold.create_portal(
-            hyperbolic_lobby,
-            personal_pocket,
-            Point3::new(0.0, 0.0, 0.7),
-            Point3::new(0.0, 0.0, 0.0),
-            Mat4::from_scale(0.5), // Smaller space
-        ).unwrap();
-        
-        // Return portals
-        manifold.create_portal(
-            spherical_dome,
-            hyperbolic_lobby,
-            Point3::new(0.0, -0.9, 0.0),
-            Point3::new(0.7, 0.0, 0.0),
-            Mat4::from_scale(1.0),
-        ).unwrap();
-        
-        manifold.create_portal(
-            escher_theater,
-            hyperbolic_lobby,
-            Point3::new(0.0, 0.0, 0.0),
-            Point3::new(-0.7, 0.0, 0.0),
-            Mat4::from_angle_y(Rad(-90.0_f32.to_radians())),
-        ).unwrap();
-        
-        manifold.create_portal(
-            personal_pocket,
-            hyperbolic_lobby,
-            Point3::new(0.0, 0.0, 0.0),
-            Point3::new(0.0, 0.0, 0.7),
-            Mat4::from_scale(2.0), // Scale back up
-        ).unwrap();
-    }
-    
-    fn load_movie_library() -> HashMap<String, Movie> {
-        let mut library = HashMap::new();
-        
-        // Sample movies
-        library.insert("inception".to_string(), Movie {
-            title: "Inception".to_string(),
-            genre: "Sci-Fi".to_string(),
-            duration: 148.0 * 60.0,
-            thumbnail_url: "inception_thumb.jpg".to_string(),
-            video_url: "inception.mp4".to_string(),
-            rating: 8.8,
-            year: 2010,
-        });
-        
-        library.insert("interstellar".to_string(), Movie {
-            title: "Interstellar".to_string(),
-            genre: "Sci-Fi".to_string(),
-            duration: 169.0 * 60.0,
-            thumbnail_url: "interstellar_thumb.jpg".to_string(),
-            video_url: "interstellar.mp4".to_string(),
-            rating: 8.6,
-            year: 2014,
-        });
-        
-        library.insert("matrix".to_string(), Movie {
-            title: "The Matrix".to_string(),
-            genre: "Sci-Fi".to_string(),
-            duration: 136.0 * 60.0,
-            thumbnail_url: "matrix_thumb.jpg".to_string(),
-            video_url: "matrix.mp4".to_string(),
-            rating: 8.7,
-            year: 1999,
-        });
-        
-        library.insert("spirited_away".to_string(), Movie {
-            title: "Spirited Away".to_string(),
-            genre: "Animation".to_string(),
-            duration: 125.0 * 60.0,
-            thumbnail_url: "spirited_away_thumb.jpg".to_string(),
-            video_url: "spirited_away.mp4".to_string(),
-            rating: 8.6,
-            year: 2001,
-        });
-        
-        library
-    }
-    
-    fn create_hyperbolic_theater(&mut self) {
-        // In hyperbolic space, we can fit infinite screens without overlap
-        // Arrange screens in a hyperbolic tiling pattern
-        
-        let movies: Vec<_> = self.movie_library.values().cloned().collect();
-        let num_screens = 7; // Start with 7 screens in hyperbolic arrangement
-        
-        for i in 0..num_screens {
-            let angle = (i as f32) * 2.0 * std::f32::consts::PI / num_screens as f32;
-            let radius = 0.5; // In Poincaré disk
-            
-            // Hyperbolic positioning
-            let x = radius * angle.cos();
-            let y = radius * angle.sin();
-            
-            let screen_entity = self.world.create_entity();
-            let position = ManifoldPosition::new(
-                ChartId(1), // Hyperbolic space
-                Point3::new(x, 1.5, y),
-            );
-            
-            self.world.add_component(
-                screen_entity,
-                EcsTransform::new(ChartId(1), Point3::new(x, 1.5, y)),
-            );
-            
-            let screen = Screen {
-                entity: screen_entity,
-                movie: movies.get(i % movies.len()).cloned(),
-                position,
-                size: (4.0, 2.25), // 16:9 aspect ratio
-                playing: false,
-                current_time: 0.0,
-                volume: 0.8,
-            };
-            
-            self.screens.push(screen);
-        }
-        
-        // Add a central mega-screen for featured content
-        let featured_entity = self.world.create_entity();
-        let featured_position = ManifoldPosition::new(
-            ChartId(1),
-            Point3::new(0.0, 2.0, 0.0),
-        );
-        
-        self.world.add_component(
-            featured_entity,
-            EcsTransform::new(ChartId(1), Point3::new(0.0, 2.0, 0.0)),
-        );
-        
-        self.screens.push(Screen {
-            entity: featured_entity,
-            movie: self.movie_library.get("inception").cloned(),
-            position: featured_position,
-            size: (8.0, 4.5),
-            playing: false,
-            current_time: 0.0,
-            volume: 1.0,
-        });
-    }
-    
-    fn create_spherical_dome_theater(&mut self) {
-        // In spherical space, create a dome theater with screens on the sphere surface
-        let radius = 10.0;
-        
-        // Clear existing screens when switching spaces
+
+    fn setup_space(&mut self, space: TheaterSpace) {
+        self.space = space;
         self.screens.clear();
-        
-        // Create screens arranged on sphere
-        for i in 0..8 {
-            for j in 0..4 {
-                let theta = (i as f32) * 2.0 * std::f32::consts::PI / 8.0;
-                let phi = (j as f32) * std::f32::consts::PI / 6.0 + std::f32::consts::PI / 6.0;
-                
-                let x = radius * phi.sin() * theta.cos();
-                let y = radius * phi.cos();
-                let z = radius * phi.sin() * theta.sin();
-                
-                let screen_entity = self.world.create_entity();
-                let position = ManifoldPosition::new(
-                    ChartId(2), // Spherical space
-                    Point3::new(x, y, z),
-                );
-                
-                self.world.add_component(
-                    screen_entity,
-                    EcsTransform::new(ChartId(2), Point3::new(x, y, z)),
-                );
-                
-                let movies: Vec<_> = self.movie_library.values().cloned().collect();
-                
-                self.screens.push(Screen {
-                    entity: screen_entity,
-                    movie: movies.get((i * 4 + j) % movies.len()).cloned(),
-                    position,
-                    size: (3.0, 1.7),
-                    playing: false,
-                    current_time: 0.0,
-                    volume: 0.8,
-                });
-            }
-        }
-    }
-    
-    fn handle_vr_input(&mut self, input: &InputManager) {
-        // Gaze-based selection
-        let forward = self.camera.forward();
-        let camera_pos = self.camera.position.local.to_point();
-        
-        // Find screen being looked at
-        let mut closest_screen = None;
-        let mut closest_distance = f32::MAX;
-        
-        for (i, screen) in self.screens.iter().enumerate() {
-            if let Some(world_pos) = screen.position.to_world(&self.manifold) {
-                let to_screen = world_pos - camera_pos;
-                let distance = to_screen.magnitude();
-                let dot = to_screen.normalize().dot(forward);
-                
-                if dot > 0.95 && distance < closest_distance {
-                    closest_distance = distance;
-                    closest_screen = Some(i);
-                }
-            }
-        }
-        
-        self.selected_screen = closest_screen;
-        
-        // Play/pause with trigger
-        if input.is_gamepad_button_pressed(GamepadButton::RightTrigger) {
-            if let Some(idx) = self.selected_screen {
-                self.screens[idx].playing = !self.screens[idx].playing;
-            }
-        }
-        
-        // Volume control with thumbstick
-        let volume_adjust = input.gamepad_axis(GamepadAxis::RightStickY);
-        if let Some(idx) = self.selected_screen {
-            self.screens[idx].volume = (self.screens[idx].volume + volume_adjust * 0.01).clamp(0.0, 1.0);
-        }
-    }
-    
-    fn teleport_to_screen(&mut self, screen_index: usize) {
-        if let Some(screen) = self.screens.get(screen_index) {
-            // Calculate optimal viewing position based on geometry
-            let screen_pos = screen.position.local.to_point();
-            
-            let viewing_distance = match self.current_space {
-                TheaterSpace::HyperbolicLobby => {
-                    // In hyperbolic space, closer distances feel farther
-                    self.user_preferences.preferred_distance * 0.7
-                }
-                TheaterSpace::SphericalDome => {
-                    // On sphere, maintain distance along geodesic
-                    self.user_preferences.preferred_distance
-                }
-                _ => self.user_preferences.preferred_distance,
-            };
-            
-            // Position camera in front of screen
-            let new_pos = Point3::new(
-                screen_pos.x * 0.5,
-                screen_pos.y,
-                screen_pos.z * 0.5 - viewing_distance,
-            );
-            
-            self.camera.set_position(screen.position.chart_id, new_pos);
-            self.camera.target = screen_pos;
-        }
-    }
-    
-    fn create_watch_party(&mut self, movie_key: &str) {
-        if let Some(movie) = self.movie_library.get(movie_key).cloned() {
-            self.watch_party = Some(WatchParty {
-                host: "You".to_string(),
-                movie,
-                participants: self.friends.clone(),
-                chat_messages: Vec::new(),
-            });
-            
-            // Create shared viewing space
-            self.switch_to_space(TheaterSpace::SocialHub);
-            
-            // Arrange friend avatars in hyperbolic circle
-            let friend_count = self.friends.len();
-            for (i, friend) in self.friends.iter_mut().enumerate() {
-                let angle = (i as f32) * 2.0 * std::f32::consts::PI / friend_count as f32;
-                let radius = 0.3;
-                
-                friend.position = ManifoldPosition::new(
-                    self.camera.position.chart_id,
-                    Point3::new(
-                        radius * angle.cos(),
-                        1.7,
-                        radius * angle.sin(),
-                    ),
-                );
-            }
-        }
-    }
-    
-    fn switch_to_space(&mut self, space: TheaterSpace) {
-        self.current_space = space;
-        
+        self.selected = 0;
+        self.transition = 1.0;
+
         match space {
             TheaterSpace::HyperbolicLobby => {
-                self.create_hyperbolic_theater();
-                self.camera.set_position(ChartId(1), Point3::new(0.0, 1.7, 0.0));
+                self.camera_pos = cgmath::Point3::new(0.0, 1.7, -6.0);
+                self.camera_rot = (0.0, 0.0);
+                // 7 screens in hyperbolic ring + 1 mega featured
+                for i in 0..7 {
+                    let angle = i as f32 * std::f32::consts::TAU / 7.0;
+                    let r = 8.0;
+                    self.screens.push(ScreenState {
+                        position: [angle.cos() * r, 2.5, angle.sin() * r],
+                        movie_idx: i % MOVIES.len(),
+                        playing: false,
+                    });
+                }
+                // Center featured screen
+                self.screens.push(ScreenState {
+                    position: [0.0, 3.5, 8.0],
+                    movie_idx: 0,
+                    playing: true,
+                });
             }
             TheaterSpace::SphericalDome => {
-                self.create_spherical_dome_theater();
-                self.camera.set_position(ChartId(2), Point3::new(0.0, 0.0, 0.0));
+                self.camera_pos = cgmath::Point3::new(0.0, 0.0, 0.0);
+                self.camera_rot = (0.0, 0.0);
+                for i in 0..8 {
+                    let angle = i as f32 * std::f32::consts::TAU / 8.0;
+                    let phi: f32 = 0.5;
+                    let r = 10.0;
+                    self.screens.push(ScreenState {
+                        position: [
+                            r * phi.sin() * angle.cos(),
+                            r * phi.cos(),
+                            r * phi.sin() * angle.sin(),
+                        ],
+                        movie_idx: i % MOVIES.len(),
+                        playing: false,
+                    });
+                }
             }
             TheaterSpace::EscherTheater => {
-                // Create impossible geometry theater
-                self.camera.set_position(ChartId(3), Point3::new(0.0, 1.7, 0.0));
+                self.camera_pos = cgmath::Point3::new(0.0, 1.7, -5.0);
+                self.camera_rot = (0.0, 0.0);
+                // Staircase-like screen arrangement
+                for i in 0..6 {
+                    let angle = i as f32 * std::f32::consts::TAU / 6.0;
+                    let height = 1.5 + (i as f32) * 0.8;
+                    let r = 7.0;
+                    self.screens.push(ScreenState {
+                        position: [angle.cos() * r, height, angle.sin() * r],
+                        movie_idx: i % MOVIES.len(),
+                        playing: false,
+                    });
+                }
             }
             TheaterSpace::PersonalPocket => {
-                // Small personal viewing space
-                self.screens.clear();
-                
-                let entity = self.world.create_entity();
-                let position = ManifoldPosition::new(ChartId(4), Point3::new(0.0, 1.7, 2.0));
-                
-                self.screens.push(Screen {
-                    entity,
-                    movie: self.movie_library.get("matrix").cloned(),
-                    position,
-                    size: (6.0, 3.4),
-                    playing: false,
-                    current_time: 0.0,
-                    volume: 1.0,
+                self.camera_pos = cgmath::Point3::new(0.0, 1.5, -3.0);
+                self.camera_rot = (0.0, 0.0);
+                // Single large screen
+                self.screens.push(ScreenState {
+                    position: [0.0, 2.0, 3.0],
+                    movie_idx: 2, // The Matrix
+                    playing: true,
                 });
-                
-                self.camera.set_position(ChartId(4), Point3::new(0.0, 1.7, -2.0));
+                // Small side screen
+                self.screens.push(ScreenState {
+                    position: [-3.0, 1.8, 1.0],
+                    movie_idx: 3,
+                    playing: false,
+                });
             }
             TheaterSpace::SocialHub => {
-                // Shared viewing with friends
-                self.camera.set_position(ChartId(1), Point3::new(0.0, 1.7, -3.0));
+                self.camera_pos = cgmath::Point3::new(0.0, 1.7, -5.0);
+                self.camera_rot = (0.0, 0.0);
+                // Main shared screen
+                self.screens.push(ScreenState {
+                    position: [0.0, 3.0, 7.0],
+                    movie_idx: 0,
+                    playing: true,
+                });
+                // Side screens for friends
+                for i in 0..4 {
+                    let x = (i as f32 - 1.5) * 4.0;
+                    self.screens.push(ScreenState {
+                        position: [x, 2.0, 6.0],
+                        movie_idx: (i + 1) % MOVIES.len(),
+                        playing: false,
+                    });
+                }
             }
         }
     }
+
+    fn update_uniform(&mut self, width: f32, height: f32, time: f32) {
+        let (yaw, pitch) = self.camera_rot;
+        let forward = cgmath::Vector3::new(
+            yaw.sin() * pitch.cos(),
+            -pitch.sin(),
+            yaw.cos() * pitch.cos(),
+        );
+        let target = self.camera_pos + forward * 5.0;
+
+        self.uniform.camera_pos = [self.camera_pos.x, self.camera_pos.y, self.camera_pos.z, 1.5];
+        self.uniform.camera_target = [target.x, target.y, target.z, time];
+        self.uniform.resolution = [width, height, self.space as u32 as f32, self.selected as f32];
+        self.uniform.params = [self.screens.len().min(8) as f32, self.ambient, 0.0, self.transition];
+
+        // Decay transition flash
+        self.transition = (self.transition - 0.03).max(0.0);
+
+        // Pack screen data
+        let screen_data = [
+            &mut self.uniform.screen0,
+            &mut self.uniform.screen1,
+            &mut self.uniform.screen2,
+            &mut self.uniform.screen3,
+            &mut self.uniform.screen4,
+            &mut self.uniform.screen5,
+            &mut self.uniform.screen6,
+            &mut self.uniform.screen7,
+        ];
+        for (i, slot) in screen_data.into_iter().enumerate() {
+            if i < self.screens.len() {
+                let s = &self.screens[i];
+                *slot = [s.position[0], s.position[1], s.position[2],
+                         if s.playing { 1.0 } else { 0.0 }];
+            } else {
+                *slot = [0.0, -100.0, 0.0, 0.0]; // hidden
+            }
+        }
+    }
+
+    fn handle_keyboard(&mut self, key: KeyCode, pressed: bool) {
+        if !pressed { return; }
+        let (yaw, _) = self.camera_rot;
+        let forward = cgmath::Vector3::new(yaw.sin(), 0.0, yaw.cos());
+        let right = cgmath::Vector3::new(yaw.cos(), 0.0, -yaw.sin());
+        let speed = self.movement_speed;
+
+        match key {
+            KeyCode::KeyW => self.camera_pos += forward * speed,
+            KeyCode::KeyS => self.camera_pos -= forward * speed,
+            KeyCode::KeyA => self.camera_pos -= right * speed,
+            KeyCode::KeyD => self.camera_pos += right * speed,
+            KeyCode::Space => self.camera_pos.y += speed,
+            KeyCode::ShiftLeft => self.camera_pos.y -= speed,
+            KeyCode::ArrowLeft => self.camera_rot.0 -= 0.05,
+            KeyCode::ArrowRight => self.camera_rot.0 += 0.05,
+            KeyCode::ArrowUp => self.camera_rot.1 = (self.camera_rot.1 - 0.05).clamp(-1.5, 1.5),
+            KeyCode::ArrowDown => self.camera_rot.1 = (self.camera_rot.1 + 0.05).clamp(-1.5, 1.5),
+            KeyCode::Equal | KeyCode::NumpadAdd => {
+                self.ambient = (self.ambient + 0.1).min(1.5);
+                println!("💡 Ambient: {:.1}", self.ambient);
+            }
+            KeyCode::Minus | KeyCode::NumpadSubtract => {
+                self.ambient = (self.ambient - 0.1).max(0.1);
+                println!("💡 Ambient: {:.1}", self.ambient);
+            }
+            KeyCode::KeyR => {
+                self.setup_space(self.space);
+                println!("↻ View reset");
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_mouse_motion(&mut self, dx: f64, dy: f64) {
+        self.camera_rot.0 += dx as f32 * self.mouse_sensitivity;
+        self.camera_rot.1 = (self.camera_rot.1 - dy as f32 * self.mouse_sensitivity).clamp(-1.5, 1.5);
+    }
+
+    fn cycle_selected(&mut self) -> bool {
+        if self.screens.is_empty() { return false; }
+        self.selected = (self.selected + 1) % self.screens.len();
+        true
+    }
+
+    fn toggle_playing(&mut self) -> bool {
+        if self.selected < self.screens.len() {
+            self.screens[self.selected].playing = !self.screens[self.selected].playing;
+            true
+        } else { false }
+    }
+
+    fn current_movie_title(&self) -> &'static str {
+        if self.selected < self.screens.len() {
+            MOVIES[self.screens[self.selected].movie_idx].title
+        } else { "?" }
+    }
 }
 
-impl GameState for VRNetflixExperience {
-    fn on_init(&mut self, engine: &mut Engine) {
-        println!("=== VR Netflix in Non-Euclidean Space ===");
-        println!("\nWelcome to infinite movie theaters!");
-        println!("\nSpaces available:");
-        println!("  • Hyperbolic Lobby - Infinite screens without overlap");
-        println!("  • Spherical Dome - 360° viewing experience");
-        println!("  • Escher Theater - Impossible geometry viewing");
-        println!("  • Personal Pocket - Your cozy curved dimension");
-        println!("  • Social Hub - Watch with friends");
-        println!("\nControls:");
-        println!("  Look - Gaze at screens to select");
-        println!("  Right Trigger - Play/Pause");
-        println!("  A Button - Teleport to screen");
-        println!("  B Button - Return to lobby");
-        println!("  X Button - Switch viewing mode");
-        println!("  Y Button - Invite friends");
-        println!("  Thumbsticks - Navigate and adjust volume");
-        
-        // Initialize graphics for movie screens
-        // Geometry shaders can be created via the renderer once the window is initialised.
-        // engine shaders are set up during the render loop.
-    }
-    
-    fn on_update(&mut self, engine: &mut Engine, dt: f32) {
-        // Update camera based on current space geometry
-        self.camera.update(&self.manifold);
-        
-        // Handle VR input
-        self.handle_vr_input(&engine.input);
-        
-        // Update playing movies
-        for screen in &mut self.screens {
-            if screen.playing {
-                if let Some(movie) = &screen.movie {
-                    screen.current_time += dt;
-                    if screen.current_time >= movie.duration {
-                        screen.current_time = 0.0;
-                        screen.playing = false;
+// ─── Main ──────────────────────────────────────────────────────────────────
+
+async fn run() {
+    env_logger::init();
+
+    println!("🎬 VR NETFLIX — HYPERBOLIC CINEMA 🎬");
+    println!("═════════════════════════════════════");
+    println!("Controls:");
+    println!("  WASD / Arrows    – Move / Look");
+    println!("  Mouse            – Look around");
+    println!("  1–5              – Switch theater:");
+    println!("    1 🟣 Hyperbolic Lobby  – Infinite screens on Poincaré disk");
+    println!("    2 ⭐ Spherical Dome    – Starfield cinema");
+    println!("    3 🔄 Escher Theater    – Impossible geometry");
+    println!("    4 🏠 Personal Pocket   – Cozy curved room");
+    println!("    5 👥 Social Hub        – Watch with friends");
+    println!("  Tab              – Cycle screen selection");
+    println!("  Left Click       – Play / Pause selected screen");
+    println!("  +/-              – Ambient brightness");
+    println!("  R                – Reset view");
+    println!("  ESC              – Quit");
+    println!();
+
+    let event_loop = EventLoop::new().unwrap();
+    let window = WinitWindowBuilder::new()
+        .with_title("VR Netflix — Hyperbolic Cinema")
+        .with_inner_size(winit::dpi::LogicalSize::new(1280, 720))
+        .build(&event_loop).unwrap();
+    let window = Arc::new(window);
+    window.set_cursor_grab(winit::window::CursorGrabMode::Confined)
+        .or_else(|_| window.set_cursor_grab(winit::window::CursorGrabMode::Locked)).ok();
+    window.set_cursor_visible(false);
+
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor { backends: wgpu::Backends::all(), ..Default::default() });
+    let surface = instance.create_surface(window.clone()).unwrap();
+    let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        compatible_surface: Some(&surface), force_fallback_adapter: false,
+    }).await.unwrap();
+    let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("Theater"), required_features: wgpu::Features::empty(),
+        required_limits: wgpu::Limits::default(),
+    }, None).await.unwrap();
+
+    let size = window.inner_size();
+    let mut config = surface.get_default_config(&adapter, size.width, size.height).unwrap();
+    config.present_mode = wgpu::PresentMode::Fifo;
+    surface.configure(&device, &config);
+
+    let mut theater = VRTheater::new();
+    let mut audio = TheaterAudio::new();
+    if audio.is_some() { println!("🔊 Audio initialized"); }
+
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Theater Shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/vr_theater.wgsl").into()),
+    });
+
+    let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Theater Uniform"),
+        contents: bytemuck::cast_slice(&[theater.uniform]),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false, min_binding_size: None,
+            },
+            count: None,
+        }],
+    });
+    let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None, layout: &bgl,
+        entries: &[wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() }],
+    });
+    theater.buffer = Some(buf);
+    theater.bind_group = Some(bg);
+
+    let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None, bind_group_layouts: &[&bgl], push_constant_ranges: &[],
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: None, layout: Some(&pl),
+        vertex: wgpu::VertexState { module: &shader, entry_point: "vs_main", buffers: &[] },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader, entry_point: "fs_main",
+            targets: &[Some(wgpu::ColorTargetState {
+                format: config.format,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
+        multiview: None,
+    });
+
+    let start_time = std::time::Instant::now();
+    let mut frame_count = 0u32;
+
+    // Print initial state
+    println!("{} {} | {} screens | 🎬 {}", theater.space.icon(), theater.space.name(),
+        theater.screens.len(), theater.current_movie_title());
+
+    let _ = event_loop.run(move |event, target| {
+        target.set_control_flow(ControlFlow::Poll);
+        match event {
+            Event::WindowEvent { ref event, window_id } if window_id == window.id() => match event {
+                WinitWindowEvent::CloseRequested => target.exit(),
+                WinitWindowEvent::Resized(s) => {
+                    if s.width > 0 && s.height > 0 {
+                        config.width = s.width; config.height = s.height;
+                        surface.configure(&device, &config);
                     }
                 }
-            }
-        }
-        
-        // Spatial audio falloff based on geometry
-        for screen in &self.screens {
-            if screen.playing {
-                if let Some(world_pos) = screen.position.to_world(&self.manifold) {
-                    let distance = (world_pos - self.camera.position.local.to_point()).magnitude();
-                    
-                    let falloff = match self.current_space {
-                        TheaterSpace::HyperbolicLobby => {
-                            // Exponential falloff in hyperbolic space
-                            (-distance * 0.5).exp()
+                WinitWindowEvent::KeyboardInput { event, .. } => {
+                    if let PhysicalKey::Code(kc) = event.physical_key {
+                        if event.state == ElementState::Pressed {
+                            if kc == KeyCode::Escape { target.exit(); return; }
+
+                            // Space switching
+                            let new_space = match kc {
+                                KeyCode::Digit1 => Some(TheaterSpace::HyperbolicLobby),
+                                KeyCode::Digit2 => Some(TheaterSpace::SphericalDome),
+                                KeyCode::Digit3 => Some(TheaterSpace::EscherTheater),
+                                KeyCode::Digit4 => Some(TheaterSpace::PersonalPocket),
+                                KeyCode::Digit5 => Some(TheaterSpace::SocialHub),
+                                _ => None,
+                            };
+                            if let Some(sp) = new_space {
+                                if sp != theater.space {
+                                    theater.setup_space(sp);
+                                    if let Some(ref a) = audio { a.play_transition(); }
+                                    println!("\n{} Entering {} | {} screens",
+                                        sp.icon(), sp.name(), theater.screens.len());
+                                }
+                            }
+
+                            // Tab = cycle selection
+                            if kc == KeyCode::Tab {
+                                if theater.cycle_selected() {
+                                    if let Some(ref a) = audio { a.play_select(); }
+                                    let m = &MOVIES[theater.screens[theater.selected].movie_idx];
+                                    let status = if theater.screens[theater.selected].playing { "▶" } else { "⏸" };
+                                    println!("  → [{}] {} {} ({}) ★{:.1}", status,
+                                        m.title, m.genre, m.year, m.rating);
+                                }
+                            }
+
+                            theater.handle_keyboard(kc, true);
                         }
-                        TheaterSpace::SphericalDome => {
-                            // Uniform audio in spherical space
-                            0.8
-                        }
-                        _ => {
-                            // Standard inverse square falloff
-                            1.0 / (1.0 + distance * distance * 0.1)
-                        }
-                    };
-                    
-                    // Apply spatial audio (would interface with audio system)
-                    let _effective_volume = screen.volume * falloff;
+                    }
                 }
+                WinitWindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+                    if theater.toggle_playing() {
+                        let playing = theater.screens[theater.selected].playing;
+                        let m = &MOVIES[theater.screens[theater.selected].movie_idx];
+                        if playing {
+                            println!("  ▶ Playing: {}", m.title);
+                        } else {
+                            println!("  ⏸ Paused: {}", m.title);
+                        }
+                        if let Some(ref a) = audio { a.play_toggle(); }
+                    }
+                }
+                WinitWindowEvent::RedrawRequested => {
+                    frame_count += 1;
+                    let elapsed = start_time.elapsed().as_secs_f32();
+
+                    theater.update_uniform(config.width as f32, config.height as f32, elapsed);
+
+                    if let Some(ref mut a) = audio { a.update_space(theater.space); }
+
+                    if let Some(ref b) = theater.buffer {
+                        queue.write_buffer(b, 0, bytemuck::cast_slice(&[theater.uniform]));
+                    }
+
+                    let output = surface.get_current_texture().unwrap();
+                    let cv = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+                    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+                    {
+                        let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: None,
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: &cv, resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            })],
+                            depth_stencil_attachment: None,
+                            occlusion_query_set: None,
+                            timestamp_writes: None,
+                        });
+                        rp.set_pipeline(&pipeline);
+                        if let Some(ref bg) = theater.bind_group { rp.set_bind_group(0, bg, &[]); }
+                        rp.draw(0..6, 0..1);
+                    }
+                    queue.submit(std::iter::once(enc.finish()));
+                    output.present();
+
+                    if frame_count % 120 == 0 {
+                        let fps = frame_count as f32 / elapsed;
+                        let playing_count = theater.screens.iter().filter(|s| s.playing).count();
+                        println!("{} {} | 📺{}+{}▶ | 🎬{} | 💡{:.1} | {:.0}fps",
+                            theater.space.icon(), theater.space.name(),
+                            theater.screens.len(), playing_count,
+                            theater.current_movie_title(), theater.ambient, fps);
+                    }
+                    window.request_redraw();
+                }
+                _ => {}
+            },
+            Event::DeviceEvent { event: DeviceEvent::MouseMotion { delta }, .. } => {
+                theater.handle_mouse_motion(delta.0, delta.1);
             }
+            Event::AboutToWait => { window.request_redraw(); }
+            _ => {}
         }
-        
-        // Handle space switching
-        use KeyCode::*;
-        if engine.input.is_key_pressed(Num1) {
-            self.switch_to_space(TheaterSpace::HyperbolicLobby);
-        } else if engine.input.is_key_pressed(Num2) {
-            self.switch_to_space(TheaterSpace::SphericalDome);
-        } else if engine.input.is_key_pressed(Num3) {
-            self.switch_to_space(TheaterSpace::EscherTheater);
-        } else if engine.input.is_key_pressed(Num4) {
-            self.switch_to_space(TheaterSpace::PersonalPocket);
-        } else if engine.input.is_key_pressed(Num5) {
-            self.switch_to_space(TheaterSpace::SocialHub);
-        }
-        
-        // Teleport to selected screen
-        if engine.input.is_gamepad_button_pressed(GamepadButton::A) {
-            if let Some(idx) = self.selected_screen {
-                self.teleport_to_screen(idx);
-            }
-        }
-        
-        // Return to lobby
-        if engine.input.is_gamepad_button_pressed(GamepadButton::B) {
-            self.switch_to_space(TheaterSpace::HyperbolicLobby);
-        }
-        
-        // Start watch party
-        if engine.input.is_gamepad_button_pressed(GamepadButton::Y) {
-            self.create_watch_party("inception");
-        }
-        
-        // Update world systems
-        self.world.update(dt);
-        
-        // Quit
-        if engine.input.is_key_pressed(KeyCode::Escape) {
-            engine.quit();
-        }
-    }
-    
-    fn on_render(&mut self, _engine: &mut Engine, renderer: &mut Renderer) {
-        // Clear with theater ambiance
-        renderer.clear(0.05, 0.05, 0.08, 1.0);
-        
-        // Render based on current space
-        match self.current_space {
-            TheaterSpace::HyperbolicLobby => {
-                // Render Poincaré disk boundaries
-                // Render hyperbolic floor pattern
-            }
-            TheaterSpace::SphericalDome => {
-                // Render spherical dome
-                // Stars/sky texture on sphere
-            }
-            TheaterSpace::EscherTheater => {
-                // Render impossible stairs and geometry
-            }
-            TheaterSpace::PersonalPocket => {
-                // Cozy small space rendering
-            }
-            TheaterSpace::SocialHub => {
-                // Render friend avatars
-                // Chat UI overlay
-            }
-        }
-        
-        // Render screens with movies
-        for (i, screen) in self.screens.iter().enumerate() {
-            let highlight = self.selected_screen == Some(i);
-            
-            // Render screen frame
-            if highlight {
-                // Glowing selection border
-            }
-            
-            // Render movie content or thumbnail
-            if screen.playing {
-                // Render video frame
-            } else {
-                // Render movie poster
-            }
-            
-            // Render UI elements
-            if let Some(_movie) = &screen.movie {
-                // Title, progress bar, controls
-            }
-        }
-        
-        // Render watch party UI
-        if let Some(_party) = &self.watch_party {
-            // Render chat messages
-            // Render participant avatars
-            // Render synchronized playback controls
-        }
-        
-        // Render portal effects between spaces
-        for _portal in self.manifold.portals_from_chart(self.camera.position.chart_id) {
-            // Render portal visualization
-        }
-    }
-    
-    fn on_cleanup(&mut self, _engine: &mut Engine) {
-        println!("Thanks for using VR Netflix in Non-Euclidean Space!");
-        println!("Your viewing preferences have been saved.");
-    }
+    });
 }
 
-fn main() {
-    let config = EngineConfig {
-        title: "VR Netflix - Non-Euclidean Theater".to_string(),
-        width: 1920,
-        height: 1080,
-        vsync: true,
-        target_fps: Some(90), // VR target framerate
-        resizable: false,
-    };
-
-    let mut engine = Engine::new(config);
-    let mut vr_netflix = VRNetflixExperience::new();
-
-    // Initialise game logic (demonstrates the trait lifecycle)
-    vr_netflix.on_init(&mut engine);
-
-    println!("\nVR Netflix experience initialised successfully.");
-    println!("Screens created: {}", vr_netflix.screens.len());
-    println!("Engine running: {}", engine.is_running());
-}
+fn main() { pollster::block_on(run()); }
