@@ -60,3 +60,7 @@ path = "examples/simple_demo.rs"
 [[example]]
 name = "vr_netflix_hyperbolic"
 path = "examples/vr_netflix_hyperbolic.rs"
+
+[[example]]
+name = "fractal_explorer"
+path = "examples/fractal_explorer.rs"
