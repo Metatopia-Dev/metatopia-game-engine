@@ -62,6 +62,7 @@ struct PestState {
     detection_radius: f32,
     ai_state: PestAI,
     hit_flash: f32,
+    death_timer: f32,       // >0 = dying animation (0.5 → 0)
     wander_timer: f32,
     rng: u32,
 }
@@ -142,7 +143,9 @@ struct PestControlGame {
     time_remaining: f32,
     firing_flash: f32,
     frame_count: u32,
-    rng_state: u32,
+    combo_count: u32,
+    combo_timer: f32,
+    last_kill_type: u32,
 }
 
 impl PestControlGame {
@@ -178,7 +181,9 @@ impl PestControlGame {
             time_remaining: 120.0,
             firing_flash: 0.0,
             frame_count: 0,
-            rng_state: 42,
+            combo_count: 0,
+            combo_timer: 0.0,
+            last_kill_type: 0,
         };
         game.spawn_level();
         game
@@ -214,6 +219,7 @@ impl PestControlGame {
                 speed, detection_radius: detect,
                 ai_state: PestAI::Wandering,
                 hit_flash: 0.0,
+                death_timer: 0.0,
                 wander_timer: next_rand(&mut seed) * 2.0 + 1.0,
                 rng: seed,
             });
@@ -242,10 +248,19 @@ impl PestControlGame {
     fn update(&mut self, dt: f32, _time: f32) {
         self.frame_count = self.frame_count.wrapping_add(1);
         self.firing_flash = (self.firing_flash - dt * 6.0).max(0.0);
+        self.combo_timer = (self.combo_timer - dt).max(0.0);
+        if self.combo_timer <= 0.0 { self.combo_count = 0; }
 
-        // Decay hit flash
+        // Decay hit flash & advance death animation
         for pest in &mut self.pests {
-            pest.hit_flash = (pest.hit_flash - dt * 4.0).max(0.0);
+            if pest.death_timer > 0.0 {
+                pest.death_timer -= dt;
+                if pest.death_timer <= 0.0 {
+                    pest.death_timer = 0.0;
+                }
+            } else {
+                pest.hit_flash = (pest.hit_flash - dt * 4.0).max(0.0);
+            }
         }
 
         self.update_pest_ai(dt);
@@ -273,6 +288,13 @@ impl PestControlGame {
                         pest.wander_timer = next_rand(&mut pest.rng) * 2.0 + 1.0;
                         let angle = next_rand(&mut pest.rng) * std::f32::consts::TAU;
                         pest.velocity = Vector3::new(angle.cos(), 0.0, angle.sin()) * pest.speed;
+
+                        // Spider leap: 15% chance to leap toward player
+                        if pest.pest_type == 3 && next_rand(&mut pest.rng) < 0.15 && dist < 6.0 {
+                            let leap = to_player.normalize() * pest.speed * 4.0;
+                            pest.velocity = Vector3::new(leap.x, 0.0, leap.z);
+                            pest.wander_timer = 0.3; // short burst
+                        }
                     }
                 }
                 PestAI::Fleeing => {
@@ -282,6 +304,12 @@ impl PestControlGame {
                             pest.velocity = flee.normalize() * pest.speed * 1.8;
                         }
                     }
+                    // Wasp dive-bomb: 8% chance to reverse and attack
+                    if pest.pest_type == 5 && next_rand(&mut pest.rng) < 0.08 && dist < 5.0 {
+                        let dive = to_player.normalize() * pest.speed * 3.0;
+                        pest.velocity = dive;
+                        pest.wander_timer = 0.4;
+                    }
                     if dist > pest.detection_radius * 2.5 {
                         pest.ai_state = PestAI::Hiding;
                         pest.wander_timer = 2.0 + next_rand(&mut pest.rng) * 2.0;
@@ -289,6 +317,13 @@ impl PestControlGame {
                 }
                 PestAI::Hiding => {
                     pest.velocity *= 0.92;
+                    // Rat ambush: 5% chance to charge from hiding
+                    if pest.pest_type == 4 && next_rand(&mut pest.rng) < 0.05 && dist < 4.0 {
+                        let charge = to_player.normalize() * pest.speed * 2.5;
+                        pest.velocity = Vector3::new(charge.x, 0.0, charge.z);
+                        pest.ai_state = PestAI::Wandering;
+                        pest.wander_timer = 0.6;
+                    }
                     if pest.wander_timer <= 0.0 && dist > pest.detection_radius * 1.5 {
                         pest.ai_state = PestAI::Wandering;
                         pest.wander_timer = 1.5;
@@ -303,9 +338,9 @@ impl PestControlGame {
             if pest.pest_type != 5 {
                 pest.position.y = pest_radius(pest.pest_type);
             } else {
-                // Wasp bobs
-                pest.position.y = pest.position.y.clamp(0.8, 2.5);
-                pest.velocity.y = (next_rand(&mut pest.rng) - 0.5) * 1.5;
+                // Wasp bobs and swoops
+                pest.position.y = pest.position.y.clamp(0.5, 2.5);
+                pest.velocity.y += (next_rand(&mut pest.rng) - 0.5) * 3.0 * dt;
             }
 
             // Wall bounds
@@ -366,19 +401,46 @@ impl PestControlGame {
 
             if pest.health <= 0.0 {
                 pest.ai_state = PestAI::Dead;
-                let pts = pest_score(pest.pest_type);
-                self.score += pts;
-                println!("💀 {} eliminated! +{} pts (Score: {})",
-                    pest_name(pest.pest_type), pts, self.score);
+                pest.death_timer = 0.5; // death animation duration
+                pest.hit_flash = 0.0;
 
-                // Check level complete
-                let alive = self.pests.iter().filter(|p| p.ai_state != PestAI::Dead).count();
-                if alive == 0 {
+                // Combo scoring
+                if self.combo_timer > 0.0 {
+                    self.combo_count += 1;
+                } else {
+                    self.combo_count = 1;
+                }
+                self.combo_timer = 2.0; // 2s window for next combo kill
+                let multiplier = (self.combo_count as f32).min(5.0);
+                let base_pts = pest_score(pest.pest_type);
+                let pts = (base_pts as f32 * multiplier) as u32;
+                self.score += pts;
+                self.last_kill_type = pest.pest_type;
+
+                if self.combo_count > 1 {
+                    println!("💀 {} eliminated! 🔥 COMBO x{}! +{} pts (Score: {})",
+                        pest_name(pest.pest_type), self.combo_count, pts, self.score);
+                } else {
+                    println!("💀 {} eliminated! +{} pts (Score: {})",
+                        pest_name(pest.pest_type), pts, self.score);
+                }
+
+                // Check level complete (only count non-dying pests)
+                let _alive = self.pests.iter()
+                    .filter(|p| p.ai_state != PestAI::Dead || p.death_timer > 0.0)
+                    .count();
+                // All dead and no ongoing death animations
+                let truly_dead = self.pests.iter()
+                    .filter(|p| p.ai_state != PestAI::Dead)
+                    .count();
+                if truly_dead == 0 {
                     let bonus = (self.time_remaining as u32) * 2;
-                    self.score += bonus;
-                    println!("🎉 Level {} Complete! Time bonus: +{} | Total: {}",
-                        self.level, bonus, self.score);
+                    let combo_bonus = self.combo_count * 10;
+                    self.score += bonus + combo_bonus;
+                    println!("🎉 Level {} Complete! Time: +{} Combo: +{} | Total: {}",
+                        self.level, bonus, combo_bonus, self.score);
                     self.level += 1;
+                    self.combo_count = 0;
                     self.spawn_level();
                 }
             } else {
@@ -403,22 +465,33 @@ impl PestControlGame {
         );
         let proj = perspective(Deg(70.0), aspect, 0.05, 100.0);
         self.camera_uniform.view_proj = (proj * view).into();
+        let location_id = ((self.level - 1) % 6) as f32;
         self.camera_uniform.view_position = [
-            self.camera_position.x, self.camera_position.y, self.camera_position.z, 0.0,
+            self.camera_position.x, self.camera_position.y, self.camera_position.z, location_id,
         ];
     }
 
     fn update_scene_uniform(&mut self, time: f32) {
-        // ── Kitchen lighting ──────────────────────────────────────
+        let loc = ((self.level - 1) % 6) as u32;
+
+        // ── Location-specific lighting ────────────────────────────
         let sd = Vector3::new(0.2_f32, 0.9, 0.3).normalize();
-        self.scene_uniform.sun_direction = [sd.x, sd.y, sd.z, 2.0];
+        let (sun_int, l0_int, l0_color, l1_int, l1_color, expo, ambient) = match loc {
+            0 => (2.0, 30.0, [1.0,0.92,0.75_f32], 15.0, [0.7,0.8,1.0_f32], 2.2, 4.0), // Kitchen
+            1 => (1.5, 35.0, [0.9,0.95,1.0],      12.0, [0.6,0.7,0.95],    2.5, 5.0), // Bathroom
+            2 => (0.5, 15.0, [0.8,0.7,0.5],        8.0, [0.5,0.4,0.3],     3.0, 2.0), // Basement
+            3 => (2.5, 20.0, [1.0,0.9,0.7],       18.0, [0.8,0.85,1.0],    2.0, 3.5), // Attic
+            4 => (3.5, 10.0, [1.0,0.95,0.8],      25.0, [0.7,0.85,1.0],    1.8, 5.0), // Garden
+            _ => (1.0, 25.0, [0.9,0.8,0.6],       10.0, [0.6,0.5,0.4],     2.8, 2.5), // Restaurant
+        };
+        self.scene_uniform.sun_direction = [sd.x, sd.y, sd.z, sun_int];
         self.scene_uniform.sun_color     = [1.0, 0.95, 0.85, 0.0];
         self.scene_uniform.light0_pos    = [0.0, 2.8, 0.0, 10.0];
-        self.scene_uniform.light0_color  = [1.0, 0.92, 0.75, 30.0]; // warm overhead
+        self.scene_uniform.light0_color  = [l0_color[0], l0_color[1], l0_color[2], l0_int];
         self.scene_uniform.light1_pos    = [0.0, 2.0, -5.5, 8.0];
-        self.scene_uniform.light1_color  = [0.7, 0.8, 1.0, 15.0]; // cool window
+        self.scene_uniform.light1_color  = [l1_color[0], l1_color[1], l1_color[2], l1_int];
 
-        self.scene_uniform.params = [time, 2.2, 4.0, self.firing_flash];
+        self.scene_uniform.params = [time, expo, ambient, self.firing_flash];
 
         let alive = self.pests.iter().filter(|p| p.ai_state != PestAI::Dead).count();
         self.scene_uniform.game_info = [
@@ -433,18 +506,29 @@ impl PestControlGame {
             &mut self.scene_uniform.pest6, &mut self.scene_uniform.pest7,
         ];
         for (i, slot) in pest_slots.into_iter().enumerate() {
-            if i < self.pests.len() && self.pests[i].ai_state != PestAI::Dead {
+            if i < self.pests.len() {
                 let p = &self.pests[i];
-                *slot = [p.position.x, p.position.y, p.position.z, p.pest_type as f32];
+                if p.ai_state != PestAI::Dead || p.death_timer > 0.0 {
+                    *slot = [p.position.x, p.position.y, p.position.z, p.pest_type as f32];
+                } else {
+                    *slot = [0.0, -10.0, 0.0, 0.0];
+                }
             } else {
-                *slot = [0.0, -10.0, 0.0, 0.0]; // hidden below floor
+                *slot = [0.0, -10.0, 0.0, 0.0];
             }
         }
 
-        // Hit flash values
+        // Flash values: positive = hit flash, negative = death progress
         let mut flash = [0.0_f32; 8];
         for (i, p) in self.pests.iter().enumerate().take(8) {
-            flash[i] = p.hit_flash;
+            if p.death_timer > 0.0 {
+                // Death progress: 0 → -1 as death_timer goes 0.5 → 0
+                flash[i] = -(1.0 - p.death_timer / 0.5);
+            } else if p.ai_state == PestAI::Dead {
+                flash[i] = -1.0; // fully dead
+            } else {
+                flash[i] = p.hit_flash;
+            }
         }
         self.scene_uniform.pest_flash  = [flash[0], flash[1], flash[2], flash[3]];
         self.scene_uniform.pest_flash2 = [flash[4], flash[5], flash[6], flash[7]];

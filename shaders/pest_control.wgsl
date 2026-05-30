@@ -1,11 +1,11 @@
-// ─── Pest Control Kitchen Shader ───────────────────────────────────────────
-// PBR · Kitchen room · 8 dynamic pests · Crosshair overlay · Hit effects
+// ─── Pest Control Shader v2 ────────────────────────────────────────────────
+// PBR · 6 location themes · Death animations · Film grain · Noise
 
 const PI: f32 = 3.14159265359;
 
 struct CameraUniform {
     view_proj: mat4x4<f32>,
-    view_position: vec4<f32>,
+    view_position: vec4<f32>,  // xyz=pos, w=location_id (0-5)
 }
 
 struct SceneUniform {
@@ -25,8 +25,8 @@ struct SceneUniform {
     pest5: vec4<f32>,
     pest6: vec4<f32>,
     pest7: vec4<f32>,
-    pest_flash: vec4<f32>,      // hit_flash 0-3
-    pest_flash2: vec4<f32>,     // hit_flash 4-7
+    pest_flash: vec4<f32>,      // >0 = hit flash, <0 = death progress (-1 = fully dead)
+    pest_flash2: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
@@ -37,34 +37,140 @@ struct VertexOutput {
     @location(0) world_pos: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) base_color: vec3<f32>,
-    @location(3) pbr_params: vec4<f32>,  // x=metallic, y=roughness, z=ao, w=emissive
+    @location(3) pbr_params: vec4<f32>,
+}
+
+// ── Noise ─────────────────────────────────────────────────────────────────
+
+fn hash21(p: vec2<f32>) -> f32 {
+    var p3 = fract(vec3<f32>(p.x, p.y, p.x) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+fn hash31(p: vec3<f32>) -> f32 {
+    var q = fract(p * vec3<f32>(0.1031, 0.1030, 0.0973));
+    q += dot(q, q.yzx + 33.33);
+    return fract((q.x + q.y) * q.z);
+}
+
+fn value_noise(p: vec3<f32>) -> f32 {
+    let i = floor(p); let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    return mix(
+        mix(mix(hash31(i), hash31(i + vec3<f32>(1.0,0.0,0.0)), u.x),
+            mix(hash31(i + vec3<f32>(0.0,1.0,0.0)), hash31(i + vec3<f32>(1.0,1.0,0.0)), u.x), u.y),
+        mix(mix(hash31(i + vec3<f32>(0.0,0.0,1.0)), hash31(i + vec3<f32>(1.0,0.0,1.0)), u.x),
+            mix(hash31(i + vec3<f32>(0.0,1.0,1.0)), hash31(i + vec3<f32>(1.0,1.0,1.0)), u.x), u.y),
+        u.z);
 }
 
 // ── Pest helpers ──────────────────────────────────────────────────────────
 
 fn pest_radius(t: f32) -> f32 {
     if (t < 0.5) { return 0.0; }
-    if (t < 1.5) { return 0.18; }  // cockroach
-    if (t < 2.5) { return 0.10; }  // ant
-    if (t < 3.5) { return 0.15; }  // spider
-    if (t < 4.5) { return 0.35; }  // rat
-    return 0.20;                    // wasp
+    if (t < 1.5) { return 0.18; }
+    if (t < 2.5) { return 0.10; }
+    if (t < 3.5) { return 0.15; }
+    if (t < 4.5) { return 0.35; }
+    return 0.20;
 }
 
 fn pest_base_color(t: f32) -> vec3<f32> {
-    if (t < 1.5) { return vec3<f32>(0.40, 0.22, 0.10); }  // cockroach: brown
-    if (t < 2.5) { return vec3<f32>(0.12, 0.04, 0.02); }  // ant: dark red
-    if (t < 3.5) { return vec3<f32>(0.18, 0.18, 0.22); }  // spider: dark gray
-    if (t < 4.5) { return vec3<f32>(0.38, 0.28, 0.18); }  // rat: brown-gray
-    return vec3<f32>(0.85, 0.75, 0.10);                     // wasp: yellow
+    if (t < 1.5) { return vec3<f32>(0.40, 0.22, 0.10); }
+    if (t < 2.5) { return vec3<f32>(0.12, 0.04, 0.02); }
+    if (t < 3.5) { return vec3<f32>(0.18, 0.18, 0.22); }
+    if (t < 4.5) { return vec3<f32>(0.38, 0.28, 0.18); }
+    return vec3<f32>(0.85, 0.75, 0.10);
 }
 
 fn pest_metallic(t: f32) -> f32 {
-    if (t < 1.5) { return 0.6; }   // cockroach: shiny chitin
-    if (t < 2.5) { return 0.3; }   // ant
-    if (t < 3.5) { return 0.4; }   // spider
-    if (t < 4.5) { return 0.1; }   // rat: fur
-    return 0.5;                     // wasp: shiny
+    if (t < 1.5) { return 0.6; }
+    if (t < 2.5) { return 0.3; }
+    if (t < 3.5) { return 0.4; }
+    if (t < 4.5) { return 0.1; }
+    return 0.5;
+}
+
+// ── Location-based room colors ────────────────────────────────────────────
+
+struct RoomTheme {
+    floor_a: vec3<f32>,
+    floor_b: vec3<f32>,
+    ceiling: vec3<f32>,
+    wall_back: vec3<f32>,
+    wall_front: vec3<f32>,
+    wall_left: vec3<f32>,
+    wall_right: vec3<f32>,
+    floor_metallic: f32,
+    floor_roughness_a: f32,
+    floor_roughness_b: f32,
+}
+
+fn get_theme(loc: u32) -> RoomTheme {
+    var t: RoomTheme;
+    if (loc == 0u) {
+        // Kitchen – warm terracotta tile
+        t.floor_a = vec3<f32>(0.65, 0.55, 0.42);
+        t.floor_b = vec3<f32>(0.55, 0.40, 0.30);
+        t.ceiling = vec3<f32>(0.88, 0.86, 0.82);
+        t.wall_back = vec3<f32>(0.35, 0.25, 0.15);
+        t.wall_front = vec3<f32>(0.75, 0.72, 0.65);
+        t.wall_left = vec3<f32>(0.72, 0.68, 0.58);
+        t.wall_right = vec3<f32>(0.50, 0.55, 0.52);
+        t.floor_metallic = 0.02; t.floor_roughness_a = 0.15; t.floor_roughness_b = 0.35;
+    } else if (loc == 1u) {
+        // Bathroom – cool blue-white tile
+        t.floor_a = vec3<f32>(0.78, 0.82, 0.85);
+        t.floor_b = vec3<f32>(0.60, 0.68, 0.75);
+        t.ceiling = vec3<f32>(0.92, 0.92, 0.92);
+        t.wall_back = vec3<f32>(0.65, 0.72, 0.78);
+        t.wall_front = vec3<f32>(0.80, 0.82, 0.85);
+        t.wall_left = vec3<f32>(0.75, 0.78, 0.82);
+        t.wall_right = vec3<f32>(0.70, 0.75, 0.80);
+        t.floor_metallic = 0.15; t.floor_roughness_a = 0.08; t.floor_roughness_b = 0.25;
+    } else if (loc == 2u) {
+        // Basement – dark concrete
+        t.floor_a = vec3<f32>(0.30, 0.28, 0.26);
+        t.floor_b = vec3<f32>(0.22, 0.20, 0.18);
+        t.ceiling = vec3<f32>(0.35, 0.33, 0.30);
+        t.wall_back = vec3<f32>(0.28, 0.26, 0.24);
+        t.wall_front = vec3<f32>(0.32, 0.30, 0.28);
+        t.wall_left = vec3<f32>(0.25, 0.23, 0.22);
+        t.wall_right = vec3<f32>(0.30, 0.28, 0.25);
+        t.floor_metallic = 0.0; t.floor_roughness_a = 0.7; t.floor_roughness_b = 0.85;
+    } else if (loc == 3u) {
+        // Attic – warm wood
+        t.floor_a = vec3<f32>(0.55, 0.40, 0.25);
+        t.floor_b = vec3<f32>(0.45, 0.32, 0.18);
+        t.ceiling = vec3<f32>(0.50, 0.38, 0.22);
+        t.wall_back = vec3<f32>(0.48, 0.35, 0.20);
+        t.wall_front = vec3<f32>(0.60, 0.50, 0.35);
+        t.wall_left = vec3<f32>(0.52, 0.40, 0.25);
+        t.wall_right = vec3<f32>(0.52, 0.40, 0.25);
+        t.floor_metallic = 0.05; t.floor_roughness_a = 0.3; t.floor_roughness_b = 0.55;
+    } else if (loc == 4u) {
+        // Garden – green/natural
+        t.floor_a = vec3<f32>(0.30, 0.42, 0.22);
+        t.floor_b = vec3<f32>(0.25, 0.35, 0.18);
+        t.ceiling = vec3<f32>(0.55, 0.65, 0.80);
+        t.wall_back = vec3<f32>(0.35, 0.45, 0.30);
+        t.wall_front = vec3<f32>(0.40, 0.50, 0.35);
+        t.wall_left = vec3<f32>(0.38, 0.48, 0.32);
+        t.wall_right = vec3<f32>(0.38, 0.48, 0.32);
+        t.floor_metallic = 0.0; t.floor_roughness_a = 0.6; t.floor_roughness_b = 0.8;
+    } else {
+        // Restaurant – polished dark
+        t.floor_a = vec3<f32>(0.15, 0.12, 0.10);
+        t.floor_b = vec3<f32>(0.25, 0.20, 0.15);
+        t.ceiling = vec3<f32>(0.20, 0.18, 0.15);
+        t.wall_back = vec3<f32>(0.30, 0.15, 0.10);
+        t.wall_front = vec3<f32>(0.22, 0.18, 0.14);
+        t.wall_left = vec3<f32>(0.25, 0.20, 0.15);
+        t.wall_right = vec3<f32>(0.25, 0.20, 0.15);
+        t.floor_metallic = 0.3; t.floor_roughness_a = 0.05; t.floor_roughness_b = 0.15;
+    }
+    return t;
 }
 
 // ── Vertex Shader ─────────────────────────────────────────────────────────
@@ -82,6 +188,8 @@ fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
     var ao        = 1.0;
     var emissive  = 0.0;
     let time = scene.params.x;
+    let loc = u32(camera.view_position.w);
+    let theme = get_theme(loc);
 
     var qv = array<vec2<f32>, 6>(
         vec2<f32>(-1.0,-1.0), vec2<f32>(1.0,-1.0), vec2<f32>(1.0,1.0),
@@ -99,68 +207,49 @@ fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
         array<u32,3>(1u,5u,3u), array<u32,3>(1u,2u,5u)
     );
 
-    // ────────────────────────────────────────────────────────────────
-    //  0..35: Room  │  36..227: 8 Pests  │  228..239: Crosshair
-    // ────────────────────────────────────────────────────────────────
-
     if (idx < 36u) {
-        // ── Kitchen Room ──────────────────────────────────────────
+        // ── Room ──────────────────────────────────────────────────
         let face = idx / 6u;
         let v = qv[idx % 6u];
 
         if (face == 0u) {
-            // Floor – terracotta tile
-            position = vec3<f32>(v.x * room, 0.0, v.y * room);
-            normal = vec3<f32>(0.0, 1.0, 0.0);
-            base_color = vec3<f32>(0.55, 0.40, 0.30);
-            metallic = 0.02; roughness = 0.35;
-        } else if (face == 1u) {
-            // Ceiling – warm white
-            position = vec3<f32>(v.x * room, 3.0, v.y * room);
-            normal = vec3<f32>(0.0, -1.0, 0.0);
-            base_color = vec3<f32>(0.88, 0.86, 0.82);
-            roughness = 0.9;
-        } else if (face == 2u) {
-            // Back wall (+Z) – dark wood cabinets
-            position = vec3<f32>(v.x * room, v.y * 1.5 + 1.5, room);
-            normal = vec3<f32>(0.0, 0.0, -1.0);
-            base_color = vec3<f32>(0.35, 0.25, 0.15);
-            metallic = 0.05; roughness = 0.55;
-        } else if (face == 3u) {
-            // Front wall (-Z) – window wall, lighter
-            position = vec3<f32>(v.x * room, v.y * 1.5 + 1.5, -room);
-            normal = vec3<f32>(0.0, 0.0, 1.0);
-            base_color = vec3<f32>(0.75, 0.72, 0.65);
-            roughness = 0.7;
-            // Window glow near center
-            let wx = abs(v.x);
-            let wy = v.y;
-            if (wx < 0.5 && wy > -0.2) {
-                emissive = 1.5;
-                base_color = vec3<f32>(0.7, 0.8, 0.95);
-            }
-        } else if (face == 4u) {
-            // Left wall (-X) – cream paint
-            position = vec3<f32>(-room, v.y * 1.5 + 1.5, v.x * room);
-            normal = vec3<f32>(1.0, 0.0, 0.0);
-            base_color = vec3<f32>(0.72, 0.68, 0.58);
-            roughness = 0.65;
-        } else {
-            // Right wall (+X) – tile backsplash / counter
-            position = vec3<f32>(room, v.y * 1.5 + 1.5, v.x * room);
-            normal = vec3<f32>(-1.0, 0.0, 0.0);
-            base_color = vec3<f32>(0.50, 0.55, 0.52);
-            metallic = 0.15; roughness = 0.25;
-        }
-
-        // Floor checker
-        if (face == 0u) {
+            position = vec3<f32>(v.x*room, 0.0, v.y*room);
+            normal = vec3<f32>(0.0,1.0,0.0);
+            // Checker floor using theme colors
             let cx = floor(position.x / 1.5 + 0.001);
             let cz = floor(position.z / 1.5 + 0.001);
-            if (((i32(cx) + i32(cz)) % 2 + 2) % 2 == 0) {
-                base_color = vec3<f32>(0.65, 0.55, 0.42);
-                roughness = 0.15;
+            if (((i32(cx)+i32(cz))%2+2)%2 == 0) {
+                base_color = theme.floor_a; roughness = theme.floor_roughness_a;
+            } else {
+                base_color = theme.floor_b; roughness = theme.floor_roughness_b;
             }
+            metallic = theme.floor_metallic;
+        } else if (face == 1u) {
+            position = vec3<f32>(v.x*room, 3.0, v.y*room);
+            normal = vec3<f32>(0.0,-1.0,0.0);
+            base_color = theme.ceiling; roughness = 0.9;
+        } else if (face == 2u) {
+            position = vec3<f32>(v.x*room, v.y*1.5+1.5, room);
+            normal = vec3<f32>(0.0,0.0,-1.0);
+            base_color = theme.wall_back; roughness = 0.55;
+        } else if (face == 3u) {
+            position = vec3<f32>(v.x*room, v.y*1.5+1.5, -room);
+            normal = vec3<f32>(0.0,0.0,1.0);
+            base_color = theme.wall_front; roughness = 0.7;
+            // Window glow
+            if (abs(v.x) < 0.5 && v.y > -0.2) {
+                emissive = 1.5;
+                base_color = mix(base_color, vec3<f32>(0.7,0.8,0.95), 0.6);
+            }
+        } else if (face == 4u) {
+            position = vec3<f32>(-room, v.y*1.5+1.5, v.x*room);
+            normal = vec3<f32>(1.0,0.0,0.0);
+            base_color = theme.wall_left; roughness = 0.65;
+        } else {
+            position = vec3<f32>(room, v.y*1.5+1.5, v.x*room);
+            normal = vec3<f32>(-1.0,0.0,0.0);
+            base_color = theme.wall_right;
+            metallic = 0.15; roughness = 0.25;
         }
 
         out.clip_position = camera.view_proj * vec4<f32>(position, 1.0);
@@ -176,64 +265,71 @@ fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
         let pest_idx = pest_local / 24u;
         let vert_local = pest_local % 24u;
 
-        // Get pest data
         var pd: vec4<f32>;
-        if (pest_idx == 0u) { pd = scene.pest0; }
-        else if (pest_idx == 1u) { pd = scene.pest1; }
-        else if (pest_idx == 2u) { pd = scene.pest2; }
-        else if (pest_idx == 3u) { pd = scene.pest3; }
-        else if (pest_idx == 4u) { pd = scene.pest4; }
-        else if (pest_idx == 5u) { pd = scene.pest5; }
-        else if (pest_idx == 6u) { pd = scene.pest6; }
-        else { pd = scene.pest7; }
+        if (pest_idx==0u){pd=scene.pest0;} else if(pest_idx==1u){pd=scene.pest1;}
+        else if(pest_idx==2u){pd=scene.pest2;} else if(pest_idx==3u){pd=scene.pest3;}
+        else if(pest_idx==4u){pd=scene.pest4;} else if(pest_idx==5u){pd=scene.pest5;}
+        else if(pest_idx==6u){pd=scene.pest6;} else{pd=scene.pest7;}
 
         let center = pd.xyz;
         let pest_type = pd.w;
-        let radius = pest_radius(pest_type);
+        var radius = pest_radius(pest_type);
 
-        // Get hit flash
         var flash = 0.0;
-        if (pest_idx == 0u) { flash = scene.pest_flash.x; }
-        else if (pest_idx == 1u) { flash = scene.pest_flash.y; }
-        else if (pest_idx == 2u) { flash = scene.pest_flash.z; }
-        else if (pest_idx == 3u) { flash = scene.pest_flash.w; }
-        else if (pest_idx == 4u) { flash = scene.pest_flash2.x; }
-        else if (pest_idx == 5u) { flash = scene.pest_flash2.y; }
-        else if (pest_idx == 6u) { flash = scene.pest_flash2.z; }
-        else { flash = scene.pest_flash2.w; }
+        if(pest_idx==0u){flash=scene.pest_flash.x;} else if(pest_idx==1u){flash=scene.pest_flash.y;}
+        else if(pest_idx==2u){flash=scene.pest_flash.z;} else if(pest_idx==3u){flash=scene.pest_flash.w;}
+        else if(pest_idx==4u){flash=scene.pest_flash2.x;} else if(pest_idx==5u){flash=scene.pest_flash2.y;}
+        else if(pest_idx==6u){flash=scene.pest_flash2.z;} else{flash=scene.pest_flash2.w;}
 
-        // Octahedron vertex
+        // Death animation: flash < 0 means dying
+        var death_factor = 1.0;
+        if (flash < 0.0) {
+            death_factor = 1.0 + flash; // goes from 1.0 → 0.0 as flash goes from 0 → -1
+            death_factor = max(death_factor, 0.0);
+            radius *= death_factor;
+        }
+
         let tri = vert_local / 3u;
         let vi = vert_local % 3u;
         let fid = fi[tri];
         var vert: vec3<f32>;
-        if (vi == 0u) { vert = oct[fid[0]]; }
-        else if (vi == 1u) { vert = oct[fid[1]]; }
-        else { vert = oct[fid[2]]; }
+        if(vi==0u){vert=oct[fid[0]];} else if(vi==1u){vert=oct[fid[1]];} else{vert=oct[fid[2]];}
 
         let n = normalize(vert);
-        // Squash vertically for ground pests to look bug-like
         var scale = vec3<f32>(1.0, 0.5, 1.0);
-        if (pest_type > 3.5 && pest_type < 4.5) { scale = vec3<f32>(1.2, 0.6, 0.8); } // rat: wider
-        if (pest_type > 4.5) { scale = vec3<f32>(0.7, 1.0, 1.2); } // wasp: elongated
-        let scaled_vert = n * scale;
-        position = center + normalize(scaled_vert) * radius;
-        normal = normalize(scaled_vert);
+        if (pest_type > 3.5 && pest_type < 4.5) { scale = vec3<f32>(1.2,0.6,0.8); }
+        if (pest_type > 4.5) { scale = vec3<f32>(0.7,1.0,1.2); }
+
+        // Death spin
+        if (flash < 0.0) {
+            let spin = (1.0 - death_factor) * 12.0;
+            let cs = cos(spin); let sn = sin(spin);
+            scale = vec3<f32>(scale.x * cs - scale.z * sn, scale.y * death_factor, scale.x * sn + scale.z * cs);
+        }
+
+        let sv = n * scale;
+        position = center + normalize(sv) * radius;
+        normal = normalize(sv);
 
         base_color = pest_base_color(pest_type);
         metallic = pest_metallic(pest_type);
         roughness = 0.35;
 
-        // Hit flash: turn white-red
+        // Hit flash: white-orange flash
         if (flash > 0.0) {
-            base_color = mix(base_color, vec3<f32>(1.0, 0.3, 0.15), flash);
+            base_color = mix(base_color, vec3<f32>(1.0, 0.4, 0.15), flash);
             emissive = flash * 8.0;
         }
+        // Death: turn dark red
+        if (flash < 0.0) {
+            base_color = mix(base_color, vec3<f32>(0.6, 0.05, 0.0), 1.0 - death_factor);
+            emissive = (1.0 - death_factor) * 3.0;
+        }
 
-        // Alive glow (subtle)
-        if (pest_type > 0.5) {
-            let pd2 = length(camera.view_position.xyz - center);
-            emissive += max(0.0, 1.0 - pd2 / 4.0) * 0.5;
+        // Proximity glow
+        if (pest_type > 0.5 && flash >= 0.0) {
+            let d = length(camera.view_position.xyz - center);
+            emissive += max(0.0, 1.0 - d / 4.0) * 0.5;
         }
 
         out.clip_position = camera.view_proj * vec4<f32>(position, 1.0);
@@ -248,37 +344,33 @@ fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
         let ch = idx - 228u;
         let bar = ch / 6u;
         let vi = ch % 6u;
-        let s = 0.018;
-        let t2 = 0.0025;
+        let s = 0.018; let t2 = 0.0025;
         var px = array<f32,6>(-1.0, 1.0, 1.0, -1.0, 1.0, -1.0);
         var py = array<f32,6>(-1.0,-1.0, 1.0, -1.0, 1.0,  1.0);
-
         var cx: f32; var cy: f32;
         if (bar == 0u) { cx = px[vi]*s; cy = py[vi]*t2; }
         else           { cx = px[vi]*t2; cy = py[vi]*s; }
 
-        // Dot at center
         let firing = scene.params.w;
-        var ch_color = vec3<f32>(1.0, 1.0, 1.0);
+        var ch_color = vec3<f32>(1.0);
         if (firing > 0.1) { ch_color = vec3<f32>(1.0, 0.4, 0.2); }
 
         out.clip_position = vec4<f32>(cx, cy, 0.0005, 1.0);
         out.world_pos = vec3<f32>(0.0);
-        out.normal = vec3<f32>(0.0, 0.0, 1.0);
+        out.normal = vec3<f32>(0.0,0.0,1.0);
         out.base_color = ch_color;
-        out.pbr_params = vec4<f32>(0.0, 0.5, 1.0, 20.0); // pure emissive
+        out.pbr_params = vec4<f32>(0.0, 0.5, 1.0, 20.0);
         return out;
     }
 }
 
-// ─── PBR Functions ─────────────────────────────────────────────────────────
+// ─── PBR ──────────────────────────────────────────────────────────────────
 
 fn distribution_ggx(N: vec3<f32>, H: vec3<f32>, r: f32) -> f32 {
-    let a = r*r; let a2 = a*a; let d = max(dot(N,H),0.0);
-    let x = d*d*(a2-1.0)+1.0; return a2/(PI*x*x+0.0001);
+    let a=r*r;let a2=a*a;let d=max(dot(N,H),0.0);let x=d*d*(a2-1.0)+1.0;return a2/(PI*x*x+0.0001);
 }
 fn geometry_schlick(d: f32, r: f32) -> f32 {
-    let k = ((r+1.0)*(r+1.0))/8.0; return d/(d*(1.0-k)+k);
+    let k=((r+1.0)*(r+1.0))/8.0;return d/(d*(1.0-k)+k);
 }
 fn geometry_smith(N: vec3<f32>, V: vec3<f32>, L: vec3<f32>, r: f32) -> f32 {
     return geometry_schlick(max(dot(N,V),0.0),r)*geometry_schlick(max(dot(N,L),0.0),r);
@@ -289,45 +381,46 @@ fn fresnel_schlick(ct: f32, F0: vec3<f32>) -> vec3<f32> {
 fn aces(x: vec3<f32>) -> vec3<f32> {
     return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),vec3<f32>(0.0),vec3<f32>(1.0));
 }
-fn to_srgb(c: vec3<f32>) -> vec3<f32> { return pow(c, vec3<f32>(1.0/2.2)); }
+fn to_srgb(c: vec3<f32>) -> vec3<f32> { return pow(c,vec3<f32>(1.0/2.2)); }
 
 fn pbr_direct(N: vec3<f32>, V: vec3<f32>, L: vec3<f32>, rad: vec3<f32>, alb: vec3<f32>, met: f32, rou: f32) -> vec3<f32> {
-    let H = normalize(V+L); let F0 = mix(vec3<f32>(0.04),alb,met);
-    let D = distribution_ggx(N,H,rou); let G = geometry_smith(N,V,L,rou);
-    let F = fresnel_schlick(max(dot(H,V),0.0),F0);
-    let NdV = max(dot(N,V),0.0); let NdL = max(dot(N,L),0.0);
-    let spec = (D*G*F)/(4.0*NdV*NdL+0.0001);
+    let H=normalize(V+L);let F0=mix(vec3<f32>(0.04),alb,met);
+    let D=distribution_ggx(N,H,rou);let G=geometry_smith(N,V,L,rou);
+    let F=fresnel_schlick(max(dot(H,V),0.0),F0);
+    let NdV=max(dot(N,V),0.0);let NdL=max(dot(N,L),0.0);
+    let spec=(D*G*F)/(4.0*NdV*NdL+0.0001);
     return ((vec3<f32>(1.0)-F)*(1.0-met)*alb/PI+spec)*rad*NdL;
 }
 fn pt_light(N: vec3<f32>, V: vec3<f32>, wp: vec3<f32>, lp: vec3<f32>, lc: vec3<f32>, li: f32, a: vec3<f32>, m: f32, r: f32) -> vec3<f32> {
-    let d = length(lp-wp); return pbr_direct(N,V,normalize(lp-wp),lc*li/(d*d+1.0),a,m,r);
+    let d=length(lp-wp);return pbr_direct(N,V,normalize(lp-wp),lc*li/(d*d+1.0),a,m,r);
 }
 
-// ─── Fragment Shader ───────────────────────────────────────────────────────
+// ─── Fragment Shader ──────────────────────────────────────────────────────
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let em = in.pbr_params.w;
-
-    // Crosshair: pure emissive, no PBR
-    if (em >= 15.0) {
-        return vec4<f32>(in.base_color, 1.0);
-    }
+    if (em >= 15.0) { return vec4<f32>(in.base_color, 1.0); } // crosshair
 
     let N = normalize(in.normal);
     let V = normalize(camera.view_position.xyz - in.world_pos);
-    let alb = in.base_color;
+    var alb = in.base_color;
     let met = in.pbr_params.x;
-    let rou = clamp(in.pbr_params.y, 0.045, 1.0);
+    var rou = clamp(in.pbr_params.y, 0.045, 1.0);
     let ao  = in.pbr_params.z;
     let time = scene.params.x;
     let expo = scene.params.y;
     let ambi = scene.params.z;
     let firing = scene.params.w;
+    let loc = u32(camera.view_position.w);
+
+    // Micro-roughness noise
+    let rn = value_noise(in.world_pos * 6.0);
+    rou = clamp(rou + (rn - 0.5) * 0.06, 0.045, 1.0);
 
     // ── Lighting ──────────────────────────────────────────────────
     var Lo = pbr_direct(N,V,normalize(scene.sun_direction.xyz),
-        scene.sun_color.xyz * scene.sun_direction.w, alb, met, rou);
+        scene.sun_color.xyz*scene.sun_direction.w, alb, met, rou);
     Lo += pt_light(N,V,in.world_pos, scene.light0_pos.xyz,
         scene.light0_color.xyz, scene.light0_color.w, alb, met, rou);
     Lo += pt_light(N,V,in.world_pos, scene.light1_pos.xyz,
@@ -336,26 +429,46 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // ── Ambient ───────────────────────────────────────────────────
     let F0a = mix(vec3<f32>(0.04), alb, met);
     let kSa = fresnel_schlick(max(dot(N,V),0.0), F0a);
-    let kDa = (vec3<f32>(1.0) - kSa) * (1.0 - met);
-    let hemi = mix(vec3<f32>(0.04, 0.035, 0.03),
-                   vec3<f32>(0.12, 0.11, 0.09), N.y * 0.5 + 0.5);
-    var color = Lo + kDa * alb * hemi * ambi * ao + kSa * hemi * ambi * 0.2;
+    let kDa = (vec3<f32>(1.0)-kSa)*(1.0-met);
 
-    // ── Emissive ──────────────────────────────────────────────────
+    var sky = vec3<f32>(0.12,0.11,0.09); var gnd = vec3<f32>(0.04,0.035,0.03);
+    // Location-specific ambient
+    if (loc == 2u) { sky = vec3<f32>(0.05,0.04,0.04); gnd = vec3<f32>(0.02,0.02,0.02); }
+    else if (loc == 4u) { sky = vec3<f32>(0.15,0.18,0.22); gnd = vec3<f32>(0.06,0.08,0.05); }
+    else if (loc == 5u) { sky = vec3<f32>(0.08,0.06,0.04); gnd = vec3<f32>(0.03,0.02,0.02); }
+    let hemi = mix(gnd, sky, N.y*0.5+0.5);
+    var color = Lo + kDa*alb*hemi*ambi*ao + kSa*hemi*ambi*0.2;
+
     if (em > 0.0) { color += alb * em; }
 
-    // ── Window light glow (face 3) ────────────────────────────────
-    if (em > 1.0 && in.world_pos.z < -5.5) {
-        let pulse = sin(time * 0.5) * 0.05 + 0.95;
-        color *= pulse;
+    // ── Grid pattern on floor ─────────────────────────────────────
+    if (N.y > 0.5 && em == 0.0) {
+        let gs = 1.5; let lw = 0.02;
+        let gx = fract(in.world_pos.x/gs); let gz = fract(in.world_pos.z/gs);
+        if ((gx<lw||gx>1.0-lw)||(gz<lw||gz>1.0-lw)) {
+            color += vec3<f32>(0.08, 0.06, 0.04);
+        }
     }
 
-    // ── Firing flash overlay ──────────────────────────────────────
+    // ── Firing flash ──────────────────────────────────────────────
     if (firing > 0.0) {
-        color += vec3<f32>(0.6, 0.4, 0.1) * firing * 0.15;
+        color += vec3<f32>(0.6,0.4,0.1) * firing * 0.2;
     }
+
+    // ── Distance fog ──────────────────────────────────────────────
+    let vd = length(camera.view_position.xyz - in.world_pos);
+    var fog_c = vec3<f32>(0.06,0.055,0.05);
+    if (loc == 2u) { fog_c = vec3<f32>(0.03,0.03,0.03); }
+    else if (loc == 4u) { fog_c = vec3<f32>(0.08,0.10,0.12); }
+    let fog_f = exp(-vd * 0.02);
+    color = mix(fog_c, color, fog_f);
 
     color = aces(color * expo);
     color = to_srgb(color);
+
+    // ── Film grain ────────────────────────────────────────────────
+    let grain = hash21(in.clip_position.xy * 0.7 + vec2<f32>(time * 137.0, 0.0));
+    color += (grain - 0.5) * 0.02;
+
     return vec4<f32>(clamp(color, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
 }
