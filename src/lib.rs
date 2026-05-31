@@ -12,6 +12,7 @@ pub mod math;
 pub mod time;
 pub mod window;
 pub mod manifold;
+pub mod scoring;
 
 // Re-export commonly used types
 pub use core::{Engine, EngineConfig, GameState};
@@ -22,6 +23,7 @@ pub use math::{Vec2, Vec3, Mat4, Transform};
 pub use resources::{ResourceManager, AssetLoader};
 pub use time::{Time, Timer};
 pub use window::{Window, WindowBuilder, WindowEvent};
+pub use scoring::{ScoreTracker, ScoreEvent, HudData};
 
 // Prelude module for easy imports
 pub mod prelude {
@@ -35,6 +37,7 @@ pub mod prelude {
     pub use crate::resources::{ResourceManager, AssetLoader};
     pub use crate::time::{Time, Timer};
     pub use crate::window::{Window, WindowBuilder, WindowEvent};
+    pub use crate::scoring::{ScoreTracker, ScoreEvent, HudData};
     pub use crate::manifold::{Manifold, Chart, ChartId, Portal, PortalId,
                               GeometryType, MetricTensor, Geodesic, ManifoldPosition};
     pub use cgmath::{Point3, Vector3, Quaternion};

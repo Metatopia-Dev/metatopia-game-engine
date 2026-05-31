@@ -29,6 +29,7 @@ struct SceneUniform {
     orb2_pos: vec4<f32>,
     orb3_pos: vec4<f32>,
     interaction: vec4<f32>,        // x=collected, y=total, z=sphere_dist, w=noise_seed
+    hud_info: vec4<f32>,           // x=resolution_x, y=resolution_y, z=unused, w=unused
 }
 
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
@@ -328,6 +329,113 @@ fn pt_light(N: vec3<f32>, V: vec3<f32>, wp: vec3<f32>, lp: vec3<f32>, lc: vec3<f
     let d = length(lp-wp); return pbr_direct(N,V,normalize(lp-wp),lc*li/(d*d+1.0),a,m,r);
 }
 
+// ─── SDF Collection HUD Overlay ───────────────────────────────────────────
+
+fn sdf_box_hud(p: vec2<f32>, b: vec2<f32>) -> f32 {
+    let d = abs(p) - b;
+    return length(max(d, vec2<f32>(0.0))) + min(max(d.x, d.y), 0.0);
+}
+
+fn sdf_seg_h(p: vec2<f32>, w: f32, t: f32) -> f32 { return sdf_box_hud(p, vec2<f32>(w, t)); }
+fn sdf_seg_v(p: vec2<f32>, h: f32, t: f32) -> f32 { return sdf_box_hud(p, vec2<f32>(t, h)); }
+
+fn seg_mask(digit: u32) -> u32 {
+    var m = array<u32, 10>(0x3Fu,0x06u,0x5Bu,0x4Fu,0x66u,0x6Du,0x7Du,0x07u,0x7Fu,0x6Fu);
+    if (digit > 9u) { return 0x00u; }
+    return m[digit];
+}
+
+fn hud_digit(p: vec2<f32>, digit: u32) -> f32 {
+    let sw=0.32; let sh=0.06; let vw=0.06; let vh=0.28;
+    let mask = seg_mask(digit);
+    var d = 999.0;
+    if((mask&0x01u)!=0u){d=min(d,sdf_seg_h(p-vec2<f32>(0.0,0.7),sw,sh));}
+    if((mask&0x02u)!=0u){d=min(d,sdf_seg_v(p-vec2<f32>(0.3,0.35),vh,vw));}
+    if((mask&0x04u)!=0u){d=min(d,sdf_seg_v(p-vec2<f32>(0.3,-0.35),vh,vw));}
+    if((mask&0x08u)!=0u){d=min(d,sdf_seg_h(p-vec2<f32>(0.0,-0.7),sw,sh));}
+    if((mask&0x10u)!=0u){d=min(d,sdf_seg_v(p-vec2<f32>(-0.3,-0.35),vh,vw));}
+    if((mask&0x20u)!=0u){d=min(d,sdf_seg_v(p-vec2<f32>(-0.3,0.35),vh,vw));}
+    if((mask&0x40u)!=0u){d=min(d,sdf_seg_h(p-vec2<f32>(0.0,0.0),sw,sh));}
+    return smoothstep(0.02,-0.02,d);
+}
+
+fn hud_number(p: vec2<f32>, value: u32, max_digits: u32) -> f32 {
+    var v = value; var result = 0.0;
+    for (var i = 0u; i < max_digits; i++) {
+        let digit = v % 10u; v = v / 10u;
+        let offset = f32(max_digits-1u-i) * 0.9;
+        result = max(result, hud_digit(p - vec2<f32>(offset, 0.0), digit));
+        if (v == 0u && i > 0u) { break; }
+    }
+    return result;
+}
+
+fn hud_slash(p: vec2<f32>) -> f32 {
+    // Diagonal slash using rotated box SDF
+    let rp = vec2<f32>(p.x * 0.7 + p.y * 0.7, -p.x * 0.7 + p.y * 0.7);
+    return smoothstep(0.02, -0.02, sdf_box_hud(rp, vec2<f32>(0.04, 0.38)));
+}
+
+fn collect_hud(screen_uv: vec2<f32>, collected_v: f32, total_v: f32) -> vec4<f32> {
+    let hx = screen_uv.x;
+    let hy = 1.0 - screen_uv.y;
+
+    // Compact panel: top-right
+    let pr = 0.99; let pt = 0.97;
+    let pw = 0.16; let ph = 0.08;
+    let pl = pr - pw; let pb = pt - ph;
+
+    if (hx < pl || hx > pr || hy < pb || hy > pt) { return vec4<f32>(0.0); }
+
+    let px = (hx - pl) / pw;
+    let py = (hy - pb) / ph;
+
+    // Rounded corners
+    let cr = 0.08;
+    let cp = vec2<f32>(px, py) - 0.5;
+    let cd = sdf_box_hud(cp, vec2<f32>(0.5-cr, 0.5-cr));
+    if (cd > cr) { return vec4<f32>(0.0); }
+
+    var col = vec3<f32>(0.02, 0.02, 0.04);
+    var alp = 0.55;
+
+    // Border glow
+    let border_d = abs(cd - cr + 0.01);
+    if (border_d < 0.012) {
+        col += vec3<f32>(0.1, 0.2, 0.35) * (1.0 - border_d / 0.012);
+    }
+
+    let ds = 12.0;
+    let coll_val = u32(collected_v);
+    let total_val = u32(total_v);
+
+    // Collected: left
+    let clp = (vec2<f32>(px, py) - vec2<f32>(0.22, 0.50)) * ds;
+    let cld = hud_number(clp, coll_val, 1u);
+
+    // Slash: center
+    let slp = (vec2<f32>(px, py) - vec2<f32>(0.50, 0.50)) * ds;
+    let sld = hud_slash(slp);
+
+    // Total: right
+    let tlp = (vec2<f32>(px, py) - vec2<f32>(0.78, 0.50)) * ds;
+    let tld = hud_number(tlp, total_val, 1u);
+
+    // Color based on progress
+    var text_col = vec3<f32>(0.5, 0.8, 1.0);
+    if (collected_v >= total_v && total_v > 0.5) {
+        text_col = vec3<f32>(0.3, 1.0, 0.4); // All collected = green
+    }
+
+    let combined = max(max(cld, tld), sld);
+    if (combined > 0.0) {
+        col = text_col;
+        alp = combined;
+    }
+
+    return vec4<f32>(col, alp);
+}
+
 // ─── Fragment Shader ───────────────────────────────────────────────────────
 
 @fragment
@@ -470,5 +578,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let grain_strength = select(select(0.025, 0.045, st==1u), 0.018, st==2u);
     color += (grain - 0.5) * grain_strength;
 
-    return vec4<f32>(clamp(color, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
+    color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
+
+    // ── Collection HUD overlay ─────────────────────────────────────
+    let hud_res = scene.hud_info.xy;
+    if (hud_res.x > 0.0 && hud_res.y > 0.0) {
+        let suv = in.clip_position.xy / hud_res;
+        let hud = collect_hud(suv, scene.interaction.x, scene.interaction.y);
+        color = mix(color, hud.rgb, hud.a);
+    }
+
+    return vec4<f32>(color, 1.0);
 }

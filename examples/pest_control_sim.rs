@@ -44,6 +44,7 @@ struct SceneUniform {
     pest7: [f32; 4],
     pest_flash: [f32; 4],
     pest_flash2: [f32; 4],
+    hud_info: [f32; 4],
 }
 
 // ─── Game Objects ──────────────────────────────────────────────────────────
@@ -165,6 +166,7 @@ impl PestControlGame {
                 pest0: [0.0;4], pest1: [0.0;4], pest2: [0.0;4], pest3: [0.0;4],
                 pest4: [0.0;4], pest5: [0.0;4], pest6: [0.0;4], pest7: [0.0;4],
                 pest_flash: [0.0;4], pest_flash2: [0.0;4],
+                hud_info: [0.0;4],
             },
             scene_buffer: None, scene_bind_group: None,
             mouse_sensitivity: 0.002,
@@ -498,6 +500,8 @@ impl PestControlGame {
             self.score as f32, self.level as f32, alive as f32, self.time_remaining,
         ];
 
+        // HUD info: resolution + combo (set per-frame in event loop)
+
         // ── Pest uniforms ─────────────────────────────────────────
         let pest_slots: [&mut [f32; 4]; 8] = [
             &mut self.scene_uniform.pest0, &mut self.scene_uniform.pest1,
@@ -728,6 +732,12 @@ async fn run() {
 
                     game.update_camera_uniform(config.width as f32 / config.height as f32);
                     game.update_scene_uniform(elapsed);
+
+                    // Pass resolution + combo to shader for HUD overlay
+                    game.scene_uniform.hud_info = [
+                        config.width as f32, config.height as f32,
+                        game.combo_count as f32, game.combo_timer,
+                    ];
 
                     if let Some(ref b) = game.camera_buffer { queue.write_buffer(b, 0, bytemuck::cast_slice(&[game.camera_uniform])); }
                     if let Some(ref b) = game.scene_buffer  { queue.write_buffer(b, 0, bytemuck::cast_slice(&[game.scene_uniform])); }

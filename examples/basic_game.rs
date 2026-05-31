@@ -49,6 +49,7 @@ struct SceneUniform {
     orb2_pos: [f32; 4],
     orb3_pos: [f32; 4],
     interaction: [f32; 4],
+    hud_info: [f32; 4],
 }
 
 // ─── Sound Events & Procedural Audio ───────────────────────────────────────
@@ -354,6 +355,7 @@ impl NonEuclideanDemo {
                 params: [0.0;4], sphere_pos: [0.0;4],
                 orb0_pos: [0.0;4], orb1_pos: [0.0;4], orb2_pos: [0.0;4], orb3_pos: [0.0;4],
                 interaction: [0.0;4],
+                hud_info: [0.0;4],
             },
             scene_buffer: None, scene_bind_group: None,
             mouse_sensitivity: 0.002,
@@ -880,6 +882,11 @@ async fn run() {
 
                     demo.update_camera_uniform(config.width as f32 / config.height as f32);
                     demo.update_scene_uniform(elapsed);
+
+                    // Pass resolution to shader for HUD overlay
+                    demo.scene_uniform.hud_info = [
+                        config.width as f32, config.height as f32, 0.0, 0.0,
+                    ];
 
                     if let Some(ref b) = demo.camera_buffer { queue.write_buffer(b, 0, bytemuck::cast_slice(&[demo.camera_uniform])); }
                     if let Some(ref b) = demo.scene_buffer  { queue.write_buffer(b, 0, bytemuck::cast_slice(&[demo.scene_uniform])); }

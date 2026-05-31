@@ -27,6 +27,7 @@ struct SceneUniform {
     pest7: vec4<f32>,
     pest_flash: vec4<f32>,      // >0 = hit flash, <0 = death progress (-1 = fully dead)
     pest_flash2: vec4<f32>,
+    hud_info: vec4<f32>,         // x=resolution_x, y=resolution_y, z=combo_count, w=combo_timer
 }
 
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
@@ -395,6 +396,132 @@ fn pt_light(N: vec3<f32>, V: vec3<f32>, wp: vec3<f32>, lp: vec3<f32>, lc: vec3<f
     let d=length(lp-wp);return pbr_direct(N,V,normalize(lp-wp),lc*li/(d*d+1.0),a,m,r);
 }
 
+// ─── SDF Score HUD Overlay ────────────────────────────────────────────────
+
+fn sdf_box_hud(p: vec2<f32>, b: vec2<f32>) -> f32 {
+    let d = abs(p) - b;
+    return length(max(d, vec2<f32>(0.0))) + min(max(d.x, d.y), 0.0);
+}
+
+fn sdf_seg_h(p: vec2<f32>, w: f32, t: f32) -> f32 { return sdf_box_hud(p, vec2<f32>(w, t)); }
+fn sdf_seg_v(p: vec2<f32>, h: f32, t: f32) -> f32 { return sdf_box_hud(p, vec2<f32>(t, h)); }
+
+fn seg_mask(digit: u32) -> u32 {
+    var m = array<u32, 10>(0x3Fu,0x06u,0x5Bu,0x4Fu,0x66u,0x6Du,0x7Du,0x07u,0x7Fu,0x6Fu);
+    if (digit > 9u) { return 0x00u; }
+    return m[digit];
+}
+
+fn hud_digit(p: vec2<f32>, digit: u32) -> f32 {
+    let sw=0.32; let sh=0.06; let vw=0.06; let vh=0.28;
+    let mask = seg_mask(digit);
+    var d = 999.0;
+    if((mask&0x01u)!=0u){d=min(d,sdf_seg_h(p-vec2<f32>(0.0,0.7),sw,sh));}
+    if((mask&0x02u)!=0u){d=min(d,sdf_seg_v(p-vec2<f32>(0.3,0.35),vh,vw));}
+    if((mask&0x04u)!=0u){d=min(d,sdf_seg_v(p-vec2<f32>(0.3,-0.35),vh,vw));}
+    if((mask&0x08u)!=0u){d=min(d,sdf_seg_h(p-vec2<f32>(0.0,-0.7),sw,sh));}
+    if((mask&0x10u)!=0u){d=min(d,sdf_seg_v(p-vec2<f32>(-0.3,-0.35),vh,vw));}
+    if((mask&0x20u)!=0u){d=min(d,sdf_seg_v(p-vec2<f32>(-0.3,0.35),vh,vw));}
+    if((mask&0x40u)!=0u){d=min(d,sdf_seg_h(p-vec2<f32>(0.0,0.0),sw,sh));}
+    return smoothstep(0.02,-0.02,d);
+}
+
+fn hud_number(p: vec2<f32>, value: u32, max_digits: u32) -> f32 {
+    var v = value; var result = 0.0;
+    for (var i = 0u; i < max_digits; i++) {
+        let digit = v % 10u; v = v / 10u;
+        let offset = f32(max_digits-1u-i) * 0.9;
+        result = max(result, hud_digit(p - vec2<f32>(offset, 0.0), digit));
+        if (v == 0u && i > 0u) { break; }
+    }
+    return result;
+}
+
+fn hud_colon(p: vec2<f32>) -> f32 {
+    let d1 = length(p - vec2<f32>(0.0, 0.25)) - 0.07;
+    let d2 = length(p - vec2<f32>(0.0, -0.25)) - 0.07;
+    return smoothstep(0.02, -0.02, min(d1, d2));
+}
+
+fn hud_dot(p: vec2<f32>) -> f32 {
+    return smoothstep(0.08, 0.0, length(p) - 0.08);
+}
+
+fn score_hud(screen_uv: vec2<f32>, score_v: f32, level_v: f32, pests_v: f32, time_v: f32, combo_v: f32) -> vec4<f32> {
+    let hx = screen_uv.x;
+    let hy = 1.0 - screen_uv.y;
+
+    // Panel: top-right
+    let pr = 0.99; let pt = 0.97;
+    let pw = 0.35; let ph = 0.13;
+    let pl = pr - pw; let pb = pt - ph;
+
+    if (hx < pl || hx > pr || hy < pb || hy > pt) { return vec4<f32>(0.0); }
+
+    let px = (hx - pl) / pw;
+    let py = (hy - pb) / ph;
+
+    // Rounded corners
+    let cr = 0.06;
+    let cp = vec2<f32>(px, py) - 0.5;
+    let cd = sdf_box_hud(cp, vec2<f32>(0.5-cr, 0.5-cr));
+    if (cd > cr) { return vec4<f32>(0.0); }
+
+    var col = vec3<f32>(0.02, 0.02, 0.04);
+    var alp = 0.6;
+
+    // Border glow
+    let border_d = abs(cd - cr + 0.01);
+    if (border_d < 0.015) {
+        col += vec3<f32>(0.15, 0.25, 0.4) * (1.0 - border_d / 0.015);
+    }
+
+    let ds = 10.0;
+
+    // Score: top row, right-aligned
+    var score_col = vec3<f32>(0.95, 0.9, 0.75);
+    if (combo_v > 1.5) { score_col = vec3<f32>(1.0, 0.75, 0.15); }
+    let sp = (vec2<f32>(px, py) - vec2<f32>(0.52, 0.72)) * ds;
+    let sd = hud_number(sp, u32(score_v), 6u);
+    if (sd > 0.0) { col = score_col; alp = sd; }
+
+    // Level: bottom-left "Lv N"
+    let lp = (vec2<f32>(px, py) - vec2<f32>(0.10, 0.28)) * ds * 0.9;
+    let ld = hud_number(lp, u32(level_v), 2u);
+    if (ld > 0.0) { col = vec3<f32>(0.5, 0.85, 1.0); alp = ld; }
+
+    // Pests: bottom-center
+    let pp = (vec2<f32>(px, py) - vec2<f32>(0.40, 0.28)) * ds * 0.9;
+    let pd = hud_number(pp, u32(pests_v), 2u);
+    if (pd > 0.0) { col = vec3<f32>(1.0, 0.55, 0.45); alp = pd; }
+
+    // Timer: bottom-right (MM:SS)
+    let tv = u32(max(time_v, 0.0));
+    let tm = tv / 60u; let ts = tv % 60u;
+    let mp = (vec2<f32>(px, py) - vec2<f32>(0.62, 0.28)) * ds * 0.9;
+    let md = hud_number(mp, tm, 1u);
+    let kp = (vec2<f32>(px, py) - vec2<f32>(0.72, 0.28)) * ds * 0.9;
+    let kd = hud_colon(kp);
+    let xp = (vec2<f32>(px, py) - vec2<f32>(0.85, 0.28)) * ds * 0.9;
+    let xd = hud_number(xp, ts, 2u);
+
+    var tc = vec3<f32>(0.6, 0.9, 0.6);
+    if (time_v < 30.0) { tc = vec3<f32>(1.0, 0.55, 0.2); }
+    if (time_v < 10.0) { tc = vec3<f32>(1.0, 0.2, 0.15); }
+    let td = max(max(md, xd), kd);
+    if (td > 0.0) { col = tc; alp = td; }
+
+    // Combo badge: top-left "xN"
+    if (combo_v > 1.5) {
+        let cv = u32(min(combo_v, 5.0));
+        let cbp = (vec2<f32>(px, py) - vec2<f32>(0.08, 0.72)) * ds * 0.85;
+        let cbd = hud_number(cbp, cv, 1u);
+        if (cbd > 0.0) { col = vec3<f32>(1.0, 0.65, 0.1); alp = cbd; }
+    }
+
+    return vec4<f32>(col, alp);
+}
+
 // ─── Fragment Shader ──────────────────────────────────────────────────────
 
 @fragment
@@ -470,5 +597,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let grain = hash21(in.clip_position.xy * 0.7 + vec2<f32>(time * 137.0, 0.0));
     color += (grain - 0.5) * 0.02;
 
-    return vec4<f32>(clamp(color, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
+    color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
+
+    // ── Score HUD overlay ─────────────────────────────────────────
+    let res = scene.hud_info.xy;
+    let combo_hud = scene.hud_info.z;
+    if (res.x > 0.0 && res.y > 0.0) {
+        let suv = in.clip_position.xy / res;
+        let gi = scene.game_info;
+        let hud = score_hud(suv, gi.x, gi.y, gi.z, gi.w, combo_hud);
+        color = mix(color, hud.rgb, hud.a);
+    }
+
+    return vec4<f32>(color, 1.0);
 }
