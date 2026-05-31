@@ -1,8 +1,9 @@
 [package]
 name = "metatopia_engine"
 version = "0.2.0"
-edition = "2026"
+edition = "2024"
 authors = ["Ilias Chrysovergis"]
+
 
 
 [dependencies]
