@@ -4,6 +4,7 @@ version = "0.2.0"
 edition = "2026"
 authors = ["Ilias Chrysovergis"]
 
+
 [dependencies]
 # Window and Graphics
 winit = "0.29"
