@@ -13,6 +13,7 @@ pub mod time;
 pub mod window;
 pub mod manifold;
 pub mod scoring;
+pub mod quickstart;
 
 // Re-export commonly used types
 pub use core::{Engine, EngineConfig, GameState};
