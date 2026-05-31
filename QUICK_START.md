@@ -41,7 +41,8 @@ sudo apt-get install build-essential pkg-config libx11-dev libxi-dev libgl1-mesa
 
 ### 1. Clone and Enter the Project
 ```bash
-cd /Users/iliaschrysovergis/GitLab/metatopia-game-engine
+git clone https://github.com/Metatopia-Dev/metatopia-game-engine.git
+cd metatopia-game-engine
 ```
 
 ### 2. Build the Project
@@ -65,6 +66,7 @@ cargo run --example basic_game --release
 - Mouse - Look around  
 - Space - Move up
 - Shift - Move down
+- R - Reset to Euclidean origin
 - Walk through glowing portals to transition between Euclidean, Hyperbolic, and Spherical spaces
 - ESC - Quit
 
@@ -77,9 +79,11 @@ cargo run --example pest_control_sim --release
 **Controls:**
 - WASD - Move
 - Mouse - Look/Aim
-- Left Click - Use tool
-- 1-3 - Switch tools
-- R - Reload
+- Left Click - Use tool (Spray Bottle / Vacuum Gun)
+- 1-2 - Switch tools (1: Spray Bottle, 2: Vacuum Gun)
+- R - Reload all tools
+- Space - Move up
+- Shift - Move down
 - ESC - Quit
 
 #### Option C: VR Netflix in Hyperbolic Space
@@ -89,14 +93,48 @@ cargo run --example vr_netflix_hyperbolic --release
 ```
 
 **Controls:**
-- Mouse - Look around to select screens
-- 1 - Hyperbolic Lobby
-- 2 - Spherical Dome
-- 3 - Escher Theater
-- 4 - Personal Pocket
-- 5 - Social Hub
-- Space - Play/Pause selected screen
+- WASD - Move
+- Mouse - Look around
+- 1-5 - Switch theater space:
+  - 1: Hyperbolic Lobby (Poincaré disk floor)
+  - 2: Spherical Dome (Starfield dome)
+  - 3: Escher Theater (Staircase screens)
+  - 4: Personal Pocket (Cozy curved room)
+  - 5: Social Hub (Shared space)
+- Tab - Cycle selected screen
+- Left Click - Play/Pause selected screen
+- Space - Move up
+- Shift - Move down
+- R - Reset view
+- +/- - Ambient brightness
 - ESC - Quit
+
+#### Option D: Mandelbulb Fractal Explorer
+Real-time 3D fractal rendered via GPU ray marching:
+```bash
+cargo run --example fractal_explorer --release
+```
+
+**Controls:**
+- Mouse Drag - Orbit camera
+- Scroll / +/- - Zoom in/out / Change iterations
+- 1-5 - Color palette (1: Fire, 2: Ocean, 3: Nebula, 4: Earth, 5: Monochrome)
+- P / O - Increase / Decrease fractal power
+- A - Toggle audio-reactive mode
+- R - Reset view
+- ESC - Quit
+
+#### Option E: Basic Graphics
+Minimal WGPU rendering setup demonstrating the engine's shader pipeline:
+```bash
+cargo run --example basic_graphics --release
+```
+
+#### Option F: Simple Demo
+Console-based demonstration of the manifold, ECS, and portal systems without GPU rendering:
+```bash
+cargo run --example simple_demo --release
+```
 
 ## Troubleshooting
 
