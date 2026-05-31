@@ -79,9 +79,9 @@ lcov.info
 *.bak
 *.old
 
-# Core dumps
-core
-core.*
+# Core dumps (anchored to root to avoid ignoring src/core/)
+/core
+/core.*
 vgcore.*
 
 # Python cache (if using any Python scripts)
