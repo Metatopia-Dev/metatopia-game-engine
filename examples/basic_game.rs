@@ -891,7 +891,14 @@ async fn run() {
                     if let Some(ref b) = demo.camera_buffer { queue.write_buffer(b, 0, bytemuck::cast_slice(&[demo.camera_uniform])); }
                     if let Some(ref b) = demo.scene_buffer  { queue.write_buffer(b, 0, bytemuck::cast_slice(&[demo.scene_uniform])); }
 
-                    let output = surface.get_current_texture().unwrap();
+                    let output = match surface.get_current_texture() {
+                        Ok(t) => t,
+                        Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
+                            surface.configure(&device, &config);
+                            return;
+                        }
+                        Err(e) => { eprintln!("Surface error: {e:?}"); return; }
+                    };
                     let cv = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
                     let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
                     {

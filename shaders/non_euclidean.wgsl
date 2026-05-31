@@ -376,55 +376,69 @@ fn hud_slash(p: vec2<f32>) -> f32 {
     return smoothstep(0.02, -0.02, sdf_box_hud(rp, vec2<f32>(0.04, 0.38)));
 }
 
-fn collect_hud(screen_uv: vec2<f32>, collected_v: f32, total_v: f32) -> vec4<f32> {
-    let hx = screen_uv.x;
-    let hy = 1.0 - screen_uv.y;
+fn collect_hud(frag_pos: vec2<f32>, res: vec2<f32>, collected_v: f32, total_v: f32) -> vec4<f32> {
+    // Panel in pixels: top-right corner
+    let panel_w = 160.0;
+    let panel_h = 70.0;
+    let margin = 12.0;
+    let corner_r = 8.0;
 
-    // Compact panel: top-right
-    let pr = 0.99; let pt = 0.97;
-    let pw = 0.16; let ph = 0.08;
-    let pl = pr - pw; let pb = pt - ph;
+    let pl = res.x - panel_w - margin;
+    let pt = margin;
+    let pr = res.x - margin;
+    let pb = pt + panel_h;
 
-    if (hx < pl || hx > pr || hy < pb || hy > pt) { return vec4<f32>(0.0); }
+    let fx = frag_pos.x;
+    let fy = frag_pos.y;
 
-    let px = (hx - pl) / pw;
-    let py = (hy - pb) / ph;
+    // Bounds check
+    if (fx < pl || fx > pr || fy < pt || fy > pb) { return vec4<f32>(0.0); }
+
+    // Pixel coords within panel (origin top-left)
+    let lx = fx - pl;
+    let ly = fy - pt;
 
     // Rounded corners
-    let cr = 0.08;
-    let cp = vec2<f32>(px, py) - 0.5;
-    let cd = sdf_box_hud(cp, vec2<f32>(0.5-cr, 0.5-cr));
-    if (cd > cr) { return vec4<f32>(0.0); }
-
-    var col = vec3<f32>(0.02, 0.02, 0.04);
-    var alp = 0.55;
-
-    // Border glow
-    let border_d = abs(cd - cr + 0.01);
-    if (border_d < 0.012) {
-        col += vec3<f32>(0.1, 0.2, 0.35) * (1.0 - border_d / 0.012);
+    let dx = max(corner_r - lx, lx - (panel_w - corner_r));
+    let dy = max(corner_r - ly, ly - (panel_h - corner_r));
+    if (dx > 0.0 && dy > 0.0 && length(vec2<f32>(dx, dy)) > corner_r) {
+        return vec4<f32>(0.0);
     }
 
-    let ds = 12.0;
+    // Background
+    var col = vec3<f32>(0.03, 0.03, 0.06);
+    var alp = 0.65;
+
+    // Border glow (2px edge)
+    let edge = min(min(lx, panel_w - lx), min(ly, panel_h - ly));
+    if (edge < 2.0) {
+        col = mix(vec3<f32>(0.1, 0.25, 0.4), col, smoothstep(0.0, 2.0, edge));
+    }
+
+    // SDF coordinates: 1 unit = 20px, y-up
+    let unit = 20.0;
+    let sx = lx / unit;
+    let sy = (panel_h - ly) / unit;
+
     let coll_val = u32(collected_v);
     let total_val = u32(total_v);
 
     // Collected: left
-    let clp = (vec2<f32>(px, py) - vec2<f32>(0.22, 0.50)) * ds;
+    let clp = vec2<f32>(sx, sy) - vec2<f32>(2.0, 1.75);
     let cld = hud_number(clp, coll_val, 1u);
 
     // Slash: center
-    let slp = (vec2<f32>(px, py) - vec2<f32>(0.50, 0.50)) * ds;
+    let slp = vec2<f32>(sx, sy) - vec2<f32>(4.0, 1.75);
     let sld = hud_slash(slp);
 
     // Total: right
-    let tlp = (vec2<f32>(px, py) - vec2<f32>(0.78, 0.50)) * ds;
+    let tlp = vec2<f32>(sx, sy) - vec2<f32>(6.0, 1.75);
     let tld = hud_number(tlp, total_val, 1u);
 
     // Color based on progress
     var text_col = vec3<f32>(0.5, 0.8, 1.0);
     if (collected_v >= total_v && total_v > 0.5) {
-        text_col = vec3<f32>(0.3, 1.0, 0.4); // All collected = green
+        text_col = vec3<f32>(0.3, 1.0, 0.4);
     }
 
     let combined = max(max(cld, tld), sld);
@@ -583,8 +597,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // ── Collection HUD overlay ─────────────────────────────────────
     let hud_res = scene.hud_info.xy;
     if (hud_res.x > 0.0 && hud_res.y > 0.0) {
-        let suv = in.clip_position.xy / hud_res;
-        let hud = collect_hud(suv, scene.interaction.x, scene.interaction.y);
+        let hud = collect_hud(in.clip_position.xy, hud_res, scene.interaction.x, scene.interaction.y);
         color = mix(color, hud.rgb, hud.a);
     }
 

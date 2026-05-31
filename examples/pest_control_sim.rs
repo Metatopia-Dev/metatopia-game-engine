@@ -172,9 +172,9 @@ impl PestControlGame {
             mouse_sensitivity: 0.002,
             pests: Vec::new(),
             tools: vec![
-                ToolState { name: "Spray", range: 4.0, damage: 30.0, cooldown: 0.15,
-                    ammo: 100, max_ammo: 100, last_fire: -10.0 },
-                ToolState { name: "Vacuum", range: 8.0, damage: 100.0, cooldown: 0.6,
+                ToolState { name: "Spray", range: 8.0, damage: 30.0, cooldown: 0.15,
+                            ammo: 100, max_ammo: 100, last_fire: -1.0 },
+                ToolState { name: "Vacuum", range: 15.0, damage: 100.0, cooldown: 0.6,
                     ammo: 20, max_ammo: 20, last_fire: -10.0 },
             ],
             current_tool: 0,
@@ -387,7 +387,7 @@ impl PestControlGame {
 
             let closest = origin + fwd * t;
             let miss_dist = (closest - pest.position).magnitude();
-            let hit_radius = pest_radius(pest.pest_type) * 2.5; // generous hitbox
+            let hit_radius = pest_radius(pest.pest_type) * 4.0; // generous hitbox
 
             if miss_dist < hit_radius && t < best_t {
                 best_t = t;
@@ -733,10 +733,11 @@ async fn run() {
                     game.update_camera_uniform(config.width as f32 / config.height as f32);
                     game.update_scene_uniform(elapsed);
 
-                    // Pass resolution + combo to shader for HUD overlay
+                    // Pass resolution + combo + ammo to shader for HUD overlay
+                    let current_ammo = game.tools[game.current_tool].ammo;
                     game.scene_uniform.hud_info = [
                         config.width as f32, config.height as f32,
-                        game.combo_count as f32, game.combo_timer,
+                        game.combo_count as f32, current_ammo as f32,
                     ];
 
                     if let Some(ref b) = game.camera_buffer { queue.write_buffer(b, 0, bytemuck::cast_slice(&[game.camera_uniform])); }
