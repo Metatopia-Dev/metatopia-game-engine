@@ -31,6 +31,8 @@ use winit::{
 use wgpu::util::DeviceExt;
 use std::collections::HashSet;
 use std::time::Instant;
+use crate::collision::{CollisionWorld, Ray};
+use crate::audio::AudioEngine;
 
 // ─── Public Key Enum (simplified) ──────────────────────────────────────────
 
@@ -245,16 +247,23 @@ pub struct UpdateCtx<'a> {
     pub camera: &'a mut FpsCamera,
     /// Scene uniform data sent to the GPU. Set lighting, game_data, etc.
     pub scene: &'a mut SceneUniform,
+    /// Collision world. Add colliders, query rays and overlaps.
+    pub collision: &'a mut CollisionWorld,
+    /// Audio engine. Play SFX and music.
+    pub audio: &'a mut AudioEngine,
     /// Elapsed time since game start (seconds).
     pub time: f32,
     /// Delta time since last frame (seconds).
     pub dt: f32,
     /// Window resolution in pixels `(width, height)`.
     pub resolution: (u32, u32),
+    /// Frame counter.
+    pub frame: u64,
 
     keys_held: &'a HashSet<KeyCode>,
     keys_just_pressed: &'a HashSet<KeyCode>,
     mouse_just_pressed: &'a HashSet<WinitMouseButton>,
+    mouse_delta_val: (f32, f32),
     quit_flag: &'a mut bool,
 }
 
@@ -267,6 +276,21 @@ impl<'a> UpdateCtx<'a> {
     pub fn mouse_pressed(&self, btn: WinitMouseButton) -> bool { self.mouse_just_pressed.contains(&btn) }
     /// Signal the game to exit.
     pub fn quit(&mut self) { *self.quit_flag = true; }
+
+    /// Raw mouse delta this frame (pixels).
+    pub fn mouse_delta(&self) -> (f32, f32) { self.mouse_delta_val }
+
+    /// World-space ray from camera through the crosshair (screen center).
+    pub fn aim_direction(&self) -> Vector3<f32> {
+        self.camera.forward()
+    }
+
+    /// Cast a ray from the camera along the aim direction through the collision world.
+    /// Returns the nearest hit within `max_dist`.
+    pub fn raycast(&self, max_dist: f32) -> Option<crate::collision::QueryHit> {
+        let ray = Ray::from_vectors(self.camera.position, self.camera.forward());
+        self.collision.raycast(&ray, max_dist)
+    }
 
     /// Move the camera using WASD + Space/Shift. Call this if you want built-in movement.
     pub fn default_camera_movement(&mut self) {
@@ -473,13 +497,17 @@ pub fn run_game(mut app: impl GameApp + 'static) {
 
     // ── State ──────────────────────────────────────────────────────
     let mut camera = FpsCamera::default();
+    let mut collision_world = CollisionWorld::new();
+    let mut audio_engine = AudioEngine::new();
     let mut keys_held: HashSet<KeyCode> = HashSet::new();
     let mut keys_just_pressed: HashSet<KeyCode> = HashSet::new();
     let mut mouse_just_pressed: HashSet<WinitMouseButton> = HashSet::new();
+    let mut mouse_delta: (f32, f32) = (0.0, 0.0);
     let mut quit = false;
     let start = Instant::now();
     let mut last_frame = Instant::now();
     let mut cursor_grabbed = false;
+    let mut frame_count: u64 = 0;
 
     app.init();
 
@@ -537,16 +565,22 @@ pub fn run_game(mut app: impl GameApp + 'static) {
                     {
                         let mut ctx = UpdateCtx {
                             camera: &mut camera, scene: &mut scene_uniform,
+                            collision: &mut collision_world,
+                            audio: &mut audio_engine,
                             time: elapsed, dt,
                             resolution: (config.width, config.height),
+                            frame: frame_count,
                             keys_held: &keys_held,
                             keys_just_pressed: &keys_just_pressed,
                             mouse_just_pressed: &mouse_just_pressed,
+                            mouse_delta_val: mouse_delta,
                             quit_flag: &mut quit,
                         };
                         app.update(&mut ctx);
                     }
 
+                    frame_count += 1;
+                    mouse_delta = (0.0, 0.0);
                     keys_just_pressed.clear();
                     mouse_just_pressed.clear();
 
@@ -607,10 +641,136 @@ pub fn run_game(mut app: impl GameApp + 'static) {
                     camera.yaw += delta.0 as f32 * camera.look_sensitivity;
                     camera.pitch = (camera.pitch - delta.1 as f32 * camera.look_sensitivity)
                         .clamp(-1.5, 1.5);
+                    mouse_delta.0 += delta.0 as f32;
+                    mouse_delta.1 += delta.1 as f32;
                 }
             }
             Event::AboutToWait => { window.request_redraw(); }
             _ => {}
         }
     });
+}
+
+// ─── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── MeshBuilder Tests ──────────────────────────────────────────
+
+    #[test]
+    fn floor_has_correct_geometry() {
+        let (verts, idxs) = MeshBuilder::floor(10.0, [1.0, 0.0, 0.0]);
+        assert_eq!(verts.len(), 4, "floor should have 4 vertices");
+        assert_eq!(idxs.len(), 6, "floor should have 6 indices (2 triangles)");
+        // All normals point up
+        for v in &verts {
+            assert!((v.normal[1] - 1.0).abs() < 0.001, "floor normal should be (0,1,0)");
+        }
+    }
+
+    #[test]
+    fn cube_has_correct_geometry() {
+        let (verts, idxs) = MeshBuilder::cube(2.0, [1.0, 1.0, 1.0]);
+        assert_eq!(verts.len(), 24, "cube should have 24 vertices (4 per face × 6 faces)");
+        assert_eq!(idxs.len(), 36, "cube should have 36 indices (6 per face × 6 faces)");
+        // All indices should be in range
+        for &i in &idxs {
+            assert!(i < verts.len() as u32, "index out of range");
+        }
+    }
+
+    #[test]
+    fn cube_normals_point_outward() {
+        let (verts, _) = MeshBuilder::cube(1.0, [1.0, 1.0, 1.0]);
+        for v in &verts {
+            let n_len = (v.normal[0]*v.normal[0] + v.normal[1]*v.normal[1] + v.normal[2]*v.normal[2]).sqrt();
+            assert!((n_len - 1.0).abs() < 0.01, "normals should be unit length, got {n_len}");
+        }
+    }
+
+    #[test]
+    fn sphere_vertex_count() {
+        let segments = 16u32;
+        let rings = 12u32;
+        let (verts, idxs) = MeshBuilder::sphere(1.0, segments, rings, [1.0, 1.0, 1.0]);
+        let expected_verts = (segments + 1) * (rings + 1);
+        assert_eq!(verts.len(), expected_verts as usize);
+        let expected_idxs = segments * rings * 6;
+        assert_eq!(idxs.len(), expected_idxs as usize);
+    }
+
+    #[test]
+    fn sphere_normals_are_unit_length() {
+        let (verts, _) = MeshBuilder::sphere(2.0, 8, 6, [1.0, 1.0, 1.0]);
+        for v in &verts {
+            let n_len = (v.normal[0]*v.normal[0] + v.normal[1]*v.normal[1] + v.normal[2]*v.normal[2]).sqrt();
+            assert!((n_len - 1.0).abs() < 0.02, "sphere normal should be unit length, got {n_len}");
+        }
+    }
+
+    // ── FpsCamera Tests ────────────────────────────────────────────
+
+    #[test]
+    fn camera_default_faces_negative_z() {
+        // At yaw=0, pitch=0 the camera should face along +X (cos(0)=1, sin(0)=0)
+        let cam = FpsCamera::default();
+        let fwd = cam.forward();
+        assert!((fwd.x - 1.0).abs() < 0.01, "forward.x should be ~1 at yaw=0");
+        assert!(fwd.y.abs() < 0.01, "forward.y should be ~0 at pitch=0");
+        assert!(fwd.z.abs() < 0.01, "forward.z should be ~0 at yaw=0");
+    }
+
+    #[test]
+    fn camera_right_is_perpendicular() {
+        let cam = FpsCamera::default();
+        let fwd = cam.forward();
+        let right = cam.right();
+        let dot = fwd.x * right.x + fwd.y * right.y + fwd.z * right.z;
+        assert!(dot.abs() < 0.01, "right should be perpendicular to forward, dot={dot}");
+    }
+
+    #[test]
+    fn camera_pitch_clamp() {
+        let mut cam = FpsCamera::default();
+        cam.pitch = 2.0; // beyond 1.5
+        let fwd = cam.forward();
+        // Even with extreme pitch, forward should still be valid
+        let len = (fwd.x*fwd.x + fwd.y*fwd.y + fwd.z*fwd.z).sqrt();
+        assert!((len - 1.0).abs() < 0.01, "forward should stay unit length");
+    }
+
+    // ── Struct Size Tests ──────────────────────────────────────────
+
+    #[test]
+    fn scene_uniform_gpu_size() {
+        // 11 × vec4 = 11 × 16 = 176 bytes
+        assert_eq!(std::mem::size_of::<SceneUniform>(), 176);
+    }
+
+    #[test]
+    fn camera_uniform_gpu_size() {
+        // mat4x4 (64) + vec4 (16) = 80 bytes
+        assert_eq!(std::mem::size_of::<CameraUniform>(), 80);
+    }
+
+    #[test]
+    fn game_vertex_pod() {
+        // Ensure GameVertex is Pod (required for bytemuck)
+        let v = GameVertex::colored([0.0; 3], [0.0; 3], [0.0; 3]);
+        let _bytes: &[u8] = bytemuck::bytes_of(&v);
+    }
+
+    // ── GameVertex Tests ───────────────────────────────────────────
+
+    #[test]
+    fn colored_vertex_defaults() {
+        let v = GameVertex::colored([1.0, 2.0, 3.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]);
+        assert_eq!(v.position, [1.0, 2.0, 3.0]);
+        assert_eq!(v.normal, [0.0, 1.0, 0.0]);
+        assert_eq!(v.color, [1.0, 0.0, 0.0]);
+        assert_eq!(v.uv, [0.0, 0.0]);
+        assert_eq!(v.pbr[1], 0.5, "default roughness should be 0.5");
+    }
 }

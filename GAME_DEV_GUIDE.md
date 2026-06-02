@@ -27,10 +27,13 @@ impl GameApp for MyGame {
         // Quit on ESC
         if ctx.key_pressed(VirtualKey::Escape) { ctx.quit(); }
 
-        // Your game logic here!
+        // Shoot on click — raycast into collision world
         if ctx.mouse_pressed(winit::event::MouseButton::Left) {
-            self.score += 10;
-            println!("Score: {}", self.score);
+            if let Some(hit) = ctx.raycast(50.0) {
+                self.score += 10;
+                ctx.audio.play_sfx("sounds/hit.wav");
+                println!("Hit {}! Score: {}", hit.tag, self.score);
+            }
         }
     }
 }
@@ -46,7 +49,7 @@ fn main() {
 cargo run --release --example my_game
 ```
 
-That's it! You get a window with a lit 3D scene, FPS camera, and input handling.
+That's it! You get a window with a lit 3D scene, FPS camera, crosshair, collision, audio, and input handling.
 
 ---
 
@@ -67,10 +70,12 @@ Your Game (examples/my_game.rs)
             └── quickstart module handles everything:
                     ├── Window creation
                     ├── GPU device setup (wgpu)
-                    ├── Render pipeline
-                    ├── Depth buffer
+                    ├── Render pipeline + depth buffer
                     ├── Camera uniforms
-                    ├── Input tracking
+                    ├── Input tracking (keyboard, mouse, mouse delta)
+                    ├── Collision world (AABB, sphere, ray)
+                    ├── Audio engine (SFX, music, preloading)
+                    ├── Crosshair overlay
                     └── Event loop
 ```
 
@@ -99,15 +104,75 @@ ctx.camera.move_speed = 10.0;
 if ctx.key_held(VirtualKey::KeyW) { /* held down */ }
 if ctx.key_pressed(VirtualKey::KeyR) { /* just pressed this frame */ }
 
-// Mouse
+// Mouse buttons
 if ctx.mouse_pressed(winit::event::MouseButton::Left) { /* clicked */ }
+
+// Mouse movement (raw delta in pixels)
+let (dx, dy) = ctx.mouse_delta();
+```
+
+### Aiming & Raycasting
+
+```rust
+// Get the direction the camera is looking
+let aim = ctx.aim_direction(); // Vector3<f32>
+
+// Cast a ray from the camera through the collision world
+if let Some(hit) = ctx.raycast(100.0) {
+    println!("Hit {} at distance {:.1}", hit.tag, hit.ray_hit.unwrap().t);
+}
+```
+
+### Collision World
+
+```rust
+// Add colliders each frame (typically in update)
+use metatopia_engine::collision::*;
+
+// Add an AABB box collider
+ctx.collision.add_aabb(
+    AABB::cube([3.0, 0.5, -2.0], 1.0),
+    "crate"
+);
+
+// Add a sphere collider
+ctx.collision.add_sphere([0.0, 1.0, 0.0], 0.5, "enemy");
+
+// Query all colliders near a point
+let nearby = ctx.collision.query_sphere([0.0, 0.0, 0.0], 5.0);
+
+// Clear and rebuild each frame for moving objects
+ctx.collision.clear();
+```
+
+### Audio
+
+```rust
+// Play a one-shot sound effect
+ctx.audio.play_sfx("sounds/hit.wav");
+
+// Play looping background music
+ctx.audio.play_music("music/theme.mp3");
+
+// Control volume (0.0 to 1.0)
+ctx.audio.set_music_volume(0.5);
+ctx.audio.set_sfx_volume(0.8);
+
+// Preload sounds for instant playback
+ctx.audio.preload("hit", "sounds/hit.wav");
+ctx.audio.play("hit"); // instant!
+
+// Pause/resume music
+ctx.audio.pause_music();
+ctx.audio.resume_music();
 ```
 
 ### Timing
 
 ```rust
-let elapsed = ctx.time;  // seconds since start
-let delta = ctx.dt;       // seconds since last frame
+let elapsed = ctx.time;   // seconds since start
+let delta = ctx.dt;        // seconds since last frame
+let frame = ctx.frame;     // frame counter (u64)
 ```
 
 ### Scene Data → Shader
@@ -121,6 +186,63 @@ ctx.scene.extra0 = [enemy_x, enemy_y, enemy_z, alive as f32];
 ctx.scene.sun_direction = [0.5, 0.8, 0.3, 3.0]; // xyz=dir, w=intensity
 ctx.scene.light0_pos = [x, y, z, range];
 ctx.scene.light0_color = [r, g, b, intensity];
+```
+
+---
+
+## Collision System
+
+The engine includes a full collision detection library (`metatopia_engine::collision`):
+
+### Collider Types
+
+| Type | Constructor | Description |
+|------|------------|-------------|
+| `AABB` | `AABB::new(min, max)` | Axis-Aligned Bounding Box |
+| `AABB` | `AABB::cube(center, size)` | Cube shorthand |
+| `AABB` | `AABB::from_center(center, half_extents)` | Box from center |
+| `SphereCollider` | `SphereCollider::new(center, radius)` | Sphere |
+| `Ray` | `Ray::new(origin, direction)` | Ray for casting |
+
+### Intersection Tests
+
+```rust
+use metatopia_engine::collision::*;
+
+let box_a = AABB::cube([0.0, 0.0, 0.0], 2.0);
+let sphere = SphereCollider::new([1.0, 0.0, 0.0], 0.5);
+let ray = Ray::new([0.0, 0.0, 5.0], [0.0, 0.0, -1.0]);
+
+box_a.contains_point([0.5, 0.5, 0.5]);    // true
+box_a.intersects_sphere(&sphere);           // true
+ray.intersects_aabb(&box_a, 100.0);        // Some(RayHit { t: 4.0, ... })
+ray.intersects_sphere(&sphere, 100.0);      // Some(RayHit { ... })
+```
+
+### CollisionWorld (via UpdateCtx)
+
+```rust
+// In your update():
+ctx.collision.clear(); // fresh each frame
+
+// Register objects
+let crate_id = ctx.collision.add_aabb(AABB::cube([3.0, 0.5, 0.0], 1.0), "crate");
+let enemy_id = ctx.collision.add_sphere([5.0, 1.0, 0.0], 0.8, "enemy");
+
+// Raycast from camera
+if let Some(hit) = ctx.raycast(50.0) {
+    match hit.tag {
+        "enemy" => { /* damage enemy */ }
+        "crate" => { /* open crate */ }
+        _ => {}
+    }
+}
+
+// Area query
+let nearby = ctx.collision.query_sphere(player_pos, 3.0);
+for hit in nearby {
+    println!("Near: {}", hit.tag);
+}
 ```
 
 ---
@@ -193,7 +315,7 @@ fn shader_source(&self) -> String {
 }
 ```
 
-Start by copying `shaders/template_game.wgsl` and modifying the fragment shader.
+Start by copying `shaders/template_game.wgsl` and modifying the fragment shader. The template includes a crosshair overlay, grid floor, PBR lighting, and ACES tonemapping.
 
 ### Shader Uniform Layout
 
@@ -221,7 +343,7 @@ scene.hud_info         // vec4 — x=res_x, y=res_y (auto), z/w=yours
 
 | Example | Complexity | Demonstrates |
 |---------|-----------|-------------|
-| `my_first_game` | ⭐ Beginner | Camera, collection, scoring |
+| `my_first_game` | ⭐ Beginner | Camera, collection, scoring, quickstart |
 | `basic_game` | ⭐⭐ Intermediate | Non-Euclidean physics, portals, audio |
 | `pest_control_sim` | ⭐⭐⭐ Advanced | FPS combat, AI, procedural levels, HUD |
 
@@ -237,11 +359,13 @@ cargo run --release --example pest_control_sim
 ## Tips
 
 1. **Start with `my_first_game.rs`** — copy it and rename
-2. **Use `ctx.scene.game_data`** to pass values to your shader
-3. **Print to console** for debugging — `println!` works fine
-4. **The shader runs per-pixel** — it's where visual magic happens
-5. **Press R** to reset (implement in your `update()`)
-6. **Performance**: use `--release` flag for 60+ fps
+2. **Use `ctx.collision`** for hit detection instead of manual distance checks
+3. **Use `ctx.audio`** for sound — no setup required
+4. **Use `ctx.raycast(dist)`** for FPS aiming / click-to-interact
+5. **Use `ctx.scene.game_data`** to pass values to your shader
+6. **Print to console** for debugging — `println!` works fine
+7. **The shader runs per-pixel** — it's where visual magic happens
+8. **Performance**: use `--release` flag for 60+ fps
 
 ---
 
@@ -253,8 +377,36 @@ metatopia-game-engine/
 │   └── my_game.rs          ← Your game logic (~100 lines)
 ├── shaders/
 │   └── my_shader.wgsl      ← Your shader (optional, template works)
+├── sounds/                  ← Your audio files (optional)
+│   ├── hit.wav
+│   └── music.mp3
 └── src/
-    └── quickstart.rs        ← Engine handles everything else
+    ├── quickstart.rs        ← Engine handles rendering + input
+    ├── collision.rs         ← AABB, Sphere, Ray, CollisionWorld
+    └── audio.rs             ← SFX + music playback
 ```
+
+---
+
+## UpdateCtx Cheat Sheet
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `ctx.default_camera_movement()` | — | WASD + Space/Shift movement |
+| `ctx.key_held(key)` | `bool` | Key is being held down |
+| `ctx.key_pressed(key)` | `bool` | Key was just pressed this frame |
+| `ctx.mouse_pressed(btn)` | `bool` | Mouse button clicked this frame |
+| `ctx.mouse_delta()` | `(f32, f32)` | Raw mouse movement (pixels) |
+| `ctx.aim_direction()` | `Vector3` | Camera forward direction |
+| `ctx.raycast(max_dist)` | `Option<QueryHit>` | Nearest collision hit from camera |
+| `ctx.quit()` | — | Exit the game |
+| `ctx.camera` | `&mut FpsCamera` | Position, yaw, pitch, speed |
+| `ctx.scene` | `&mut SceneUniform` | Lighting, game data → shader |
+| `ctx.collision` | `&mut CollisionWorld` | Add/query colliders |
+| `ctx.audio` | `&mut AudioEngine` | Play SFX, music, set volume |
+| `ctx.time` | `f32` | Seconds since game start |
+| `ctx.dt` | `f32` | Seconds since last frame |
+| `ctx.frame` | `u64` | Frame counter |
+| `ctx.resolution` | `(u32, u32)` | Window size in pixels |
 
 Happy building! 🚀

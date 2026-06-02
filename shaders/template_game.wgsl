@@ -136,5 +136,24 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     color = aces(color * 1.8);
     color = to_srgb(color);
 
+    // ── Crosshair overlay ────────────────────────────────────────
+    // Small dot + ring at screen center for FPS aiming.
+    let res = vec2<f32>(scene.hud_info.x, scene.hud_info.y);
+    if (res.x > 0.0) {
+        let px = in.clip_position.xy;
+        let center = res * 0.5;
+        let d = length(px - center);
+        // Dot (radius 2px)
+        if (d < 2.0) {
+            color = vec3(1.0, 1.0, 1.0);
+        }
+        // Ring (radius 8px, thickness 1px)
+        let ring = abs(d - 8.0);
+        if (ring < 1.0) {
+            let alpha = 1.0 - ring;
+            color = mix(color, vec3(1.0, 1.0, 1.0), alpha * 0.5);
+        }
+    }
+
     return vec4<f32>(clamp(color, vec3(0.0), vec3(1.0)), 1.0);
 }

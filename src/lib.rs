@@ -13,6 +13,8 @@ pub mod time;
 pub mod window;
 pub mod manifold;
 pub mod scoring;
+pub mod collision;
+pub mod audio;
 pub mod quickstart;
 
 // Re-export commonly used types
@@ -25,6 +27,8 @@ pub use resources::{ResourceManager, AssetLoader};
 pub use time::{Time, Timer};
 pub use window::{Window, WindowBuilder, WindowEvent};
 pub use scoring::{ScoreTracker, ScoreEvent, HudData};
+pub use collision::{AABB, SphereCollider, Ray, RayHit, Collider, CollisionWorld};
+pub use audio::AudioEngine;
 
 // Prelude module for easy imports
 pub mod prelude {
@@ -39,6 +43,8 @@ pub mod prelude {
     pub use crate::time::{Time, Timer};
     pub use crate::window::{Window, WindowBuilder, WindowEvent};
     pub use crate::scoring::{ScoreTracker, ScoreEvent, HudData};
+    pub use crate::collision::{AABB, SphereCollider, Ray, RayHit, Collider, CollisionWorld};
+    pub use crate::audio::AudioEngine;
     pub use crate::manifold::{Manifold, Chart, ChartId, Portal, PortalId,
                               GeometryType, MetricTensor, Geodesic, ManifoldPosition};
     pub use cgmath::{Point3, Vector3, Quaternion};

@@ -55,7 +55,19 @@ Note: The first build will take a few minutes as it downloads and compiles all d
 
 ### 3. Run the Examples
 
-#### Option A: Basic Non-Euclidean Demo
+#### Option A: Quickstart Template (Easiest!)
+Create and collect cubes — the simplest way to see the engine in action:
+```bash
+cargo run --example my_first_game --release
+```
+
+**Controls:**
+- WASD - Move
+- Mouse - Look around
+- Walk over cubes to collect them
+- ESC - Quit
+
+#### Option B: Basic Non-Euclidean Demo
 Experience portals and different geometries:
 ```bash
 cargo run --example basic_game --release
@@ -70,7 +82,7 @@ cargo run --example basic_game --release
 - Walk through glowing portals to transition between Euclidean, Hyperbolic, and Spherical spaces
 - ESC - Quit
 
-#### Option B: Pest Control Simulator
+#### Option C: Pest Control Simulator
 Play as an exterminator in Euclidean space:
 ```bash
 cargo run --example pest_control_sim --release
@@ -86,7 +98,7 @@ cargo run --example pest_control_sim --release
 - Shift - Move down
 - ESC - Quit
 
-#### Option C: VR Netflix in Hyperbolic Space
+#### Option D: VR Netflix in Hyperbolic Space
 Infinite movie theaters without overlap:
 ```bash
 cargo run --example vr_netflix_hyperbolic --release
@@ -109,7 +121,7 @@ cargo run --example vr_netflix_hyperbolic --release
 - +/- - Ambient brightness
 - ESC - Quit
 
-#### Option D: Mandelbulb Fractal Explorer
+#### Option E: Mandelbulb Fractal Explorer
 Real-time 3D fractal rendered via GPU ray marching:
 ```bash
 cargo run --example fractal_explorer --release
@@ -124,13 +136,13 @@ cargo run --example fractal_explorer --release
 - R - Reset view
 - ESC - Quit
 
-#### Option E: Basic Graphics
+#### Option F: Basic Graphics
 Minimal WGPU rendering setup demonstrating the engine's shader pipeline:
 ```bash
 cargo run --example basic_graphics --release
 ```
 
-#### Option F: Simple Demo
+#### Option G: Simple Demo
 Console-based demonstration of the manifold, ECS, and portal systems without GPU rendering:
 ```bash
 cargo run --example simple_demo --release
@@ -182,9 +194,11 @@ RUST_LOG=debug cargo run --example basic_game
 
 ## Next Steps
 
-1. **Explore the code**: Check out the examples in `examples/` directory
-2. **Read the docs**: See README.md for architecture details
-3. **Create your own**: Copy an example and start building your non-Euclidean experience!
+1. **New to game dev?** Read the [Game Developer's Guide](GAME_DEV_GUIDE.md) for a step-by-step tutorial
+2. **Start with `my_first_game.rs`** — it's ~130 lines and uses the zero-boilerplate `quickstart` module
+3. **Explore the code**: Check out the examples in `examples/` directory
+4. **Read the docs**: See README.md for architecture details
+5. **Create your own**: Copy `my_first_game.rs`, rename it, and start building!
 
 ## System Requirements
 
@@ -196,12 +210,12 @@ RUST_LOG=debug cargo run --example basic_game
 
 ## Quick Test
 
-To quickly verify everything works, run this minimal test:
+To quickly verify everything works, run the engine's test suite:
 ```bash
 cargo test
 ```
 
-This will run the engine's unit tests without launching graphics.
+This runs 80+ unit, integration, and doc-tests without launching graphics.
 
 ---
 

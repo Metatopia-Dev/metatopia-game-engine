@@ -38,6 +38,18 @@ A game engine written in Rust that treats space as a manifold, enabling seamless
 - **Manifold-Aware Transforms**: Position and orientation tied to chart coordinates
 - **System Pipeline**: Logic that operates across component sets
 
+### Zero-Boilerplate Quickstart
+- **GameApp Trait**: Implement one trait to create a full 3D game — no wgpu knowledge needed
+- **Built-in FPS Camera**: WASD + mouse look with configurable speed and sensitivity
+- **Collision Detection**: AABB, Sphere, and Ray colliders with spatial queries
+- **Audio Engine**: Fire-and-forget SFX, looping music, preloading, volume control
+- **Mouse + Crosshair**: Raw mouse delta, aim direction, built-in crosshair overlay
+- **Mesh Builders**: Cube, sphere, and floor primitives with PBR vertex format
+
+### Scoring & HUD
+- **ScoreTracker**: Combo multiplier with decay timer, high score tracking
+- **HudData**: GPU-uploadable struct for procedural 7-segment HUD overlays
+
 ## 🎮 Examples
 
 ### 1. Non-Euclidean Physics Demo (`basic_game`)
@@ -119,6 +131,15 @@ Console-based demonstration of the manifold, ECS, and portal systems without GPU
 cargo run --release --example simple_demo
 ```
 
+### 7. My First Game — Quickstart Template (`my_first_game`)
+Minimal ~130-line game demonstrating the zero-boilerplate `quickstart` module. Walk over colored cubes to collect them.
+
+```bash
+cargo run --release --example my_first_game
+```
+
+**Controls**: WASD Move · Mouse Look · Walk over cubes to collect · ESC Quit
+
 ## 🏗️ Architecture
 
 ### Source Tree
@@ -127,6 +148,10 @@ cargo run --release --example simple_demo
 src/
 ├── lib.rs              # Prelude and module exports
 ├── core/mod.rs         # Engine, GameState, EngineConfig
+├── quickstart.rs       # Zero-boilerplate game launcher (GameApp trait)
+├── collision.rs        # AABB, Sphere, Ray, CollisionWorld
+├── audio.rs            # Audio engine (SFX, music, preloading)
+├── scoring/mod.rs      # ScoreTracker, combos, HudData
 ├── manifold/
 │   ├── mod.rs          # Manifold container
 │   ├── chart.rs        # Chart, ChartId, GeometryType
@@ -147,6 +172,7 @@ src/
 └── window/mod.rs       # Window creation, event loop
 
 shaders/
+├── template_game.wgsl  # Starter shader for quickstart games
 ├── non_euclidean.wgsl  # PBR + portal rooms + orbs + noise
 ├── pest_control.wgsl   # FPS environment + PBR + film grain
 ├── fractal_explorer.wgsl  # Ray-marched Mandelbulb + 5 palettes
@@ -154,6 +180,7 @@ shaders/
 └── basic.wgsl          # Minimal vertex/fragment shader
 
 examples/
+├── my_first_game.rs    # Quickstart template (~130 lines)
 ├── basic_game.rs       # Non-Euclidean physics sandbox
 ├── pest_control_sim.rs # FPS pest control game
 ├── fractal_explorer.rs # 3D fractal explorer
@@ -195,13 +222,42 @@ cd metatopia-game-engine
 # Build
 cargo build --release
 
-# Run an example
+# Run the quickstart template
+cargo run --release --example my_first_game
+
+# Or run the non-Euclidean demo
 cargo run --release --example basic_game
 ```
 
 ## 📖 Usage
 
-### Creating a Non-Euclidean World
+### Quickstart (Recommended for New Developers)
+
+See [GAME_DEV_GUIDE.md](GAME_DEV_GUIDE.md) for the complete guide. Minimal example:
+
+```rust
+use metatopia_engine::quickstart::*;
+
+struct MyGame { score: u32 }
+
+impl GameApp for MyGame {
+    fn update(&mut self, ctx: &mut UpdateCtx) {
+        ctx.default_camera_movement();
+        if ctx.key_pressed(VirtualKey::Escape) { ctx.quit(); }
+
+        if ctx.mouse_pressed(winit::event::MouseButton::Left) {
+            if let Some(hit) = ctx.raycast(50.0) {
+                self.score += 10;
+                ctx.audio.play_sfx("sounds/hit.wav");
+            }
+        }
+    }
+}
+
+fn main() { run_game(MyGame { score: 0 }); }
+```
+
+### Advanced: Creating a Non-Euclidean World
 
 ```rust
 use metatopia_engine::prelude::*;
@@ -334,6 +390,13 @@ This project is licensed under the MIT License — see the LICENSE file for deta
 - [x] Ray marching (Mandelbulb fractal explorer)
 - [x] Non-deterministic physics (quantum kicks)
 - [x] Multiple themed environments per demo
+- [x] Zero-boilerplate quickstart system
+- [x] Collision detection (AABB, sphere, ray, spatial queries)
+- [x] Audio engine integration in quickstart
+- [x] Scoring system with combo mechanics
+- [x] Mouse delta tracking + FPS crosshair
+- [x] 80+ automated tests
+- [ ] Dynamic mesh updates (instanced drawing)
 - [ ] Networked multiplayer support
 - [ ] More geometry types (Torus, Klein bottle)
 - [ ] Visual scripting for portal creation
