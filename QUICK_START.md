@@ -88,6 +88,23 @@ Play as an exterminator in Euclidean space:
 cargo run --example pest_control_sim --release
 ```
 
+#### Option D: Metatopia Studio (3D Editor & Rhai Scripting)
+Build scenes and write live scripts directly in the engine:
+```bash
+cargo run --example metatopia_editor --release
+```
+
+**Controls:**
+- WASD + Mouse - Fly camera
+- Space - Toggle Play / Edit simulation modes
+- Tab - Cycle selected entity
+- 1..5 - Spawn Cube, Sphere, Cylinder, Torus, Capsule
+- G - Cycle Rhai script presets (Pulsing Glow, Hover & Bob, Color Shift, Orbit)
+- R - Recompile and live hot-reload all scripts
+- Arrow Keys / PgUp / PgDown - Move selected object
+- Q / E - Rotate selected object
+- X - Delete selected object
+
 **Controls:**
 - WASD - Move
 - Mouse - Look/Aim

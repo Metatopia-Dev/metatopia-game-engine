@@ -100,7 +100,23 @@ cargo run --release --example cyber_arena_fps
 
 ---
 
-### 4. Mandelbulb Fractal Explorer (`fractal_explorer`)
+### 4. Metatopia Studio — 3D Game Editor & Rhai Scripting Suite (`metatopia_editor`)
+Full-featured 3D scene editor with embedded **Rhai scripting engine**, live entity inspector, infinite grid viewport, and real-time Play/Edit simulation modes.
+
+- **Embedded Rhai Scripting**: Pure Rust dynamic scripting engine with live hot-reload (`R`), script presets (Pulsing Glow, Hover & Bob, Color Shift, Orbit), and console logging
+- **Scene Outliner & Inspector**: Inspect and manipulate transforms ($X, Y, Z, \text{Yaw}, \text{Pitch}$), PBR materials, metallic/roughness, and emissive glow
+- **Procedural Shapes**: Instant 3D primitive spawning (+Cube, +Sphere, +Cylinder, +Torus, +Capsule, +Particles)
+- **Play / Edit Modes**: Toggle simulation with <kbd>Space</kbd> to test script logic and physics live!
+
+```bash
+cargo run --release --example metatopia_editor
+```
+
+**Controls**: WASD + Mouse Fly · Space Play/Edit · Tab Cycle Selection · 1–5 Spawn Objects · G Script Presets · R Hot-Reload · Arrow Keys Move · Q/E Rotate · X Delete
+
+---
+
+### 5. Mandelbulb Fractal Explorer (`fractal_explorer`)
 Real-time 3D fractal rendered via GPU ray marching with orbit camera, 5 color palettes, adjustable power parameter, and audio-reactive pulsation.
 
 - **Ray Marching**: 120-step march through Mandelbulb SDF
@@ -116,7 +132,7 @@ cargo run --release --example fractal_explorer
 
 ---
 
-### 5. VR Netflix — Hyperbolic Cinema (`vr_netflix_hyperbolic`)
+### 6. VR Netflix — Hyperbolic Cinema (`vr_netflix_hyperbolic`)
 GPU-rendered non-Euclidean movie theater with 5 viewing spaces, procedural movie screens, and space-specific audio drones.
 
 - **Hyperbolic Lobby** 🟣: 8 screens on Poincaré disk with hyperbolic 7-fold tiling floor

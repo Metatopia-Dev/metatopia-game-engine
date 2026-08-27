@@ -26,6 +26,7 @@ pub mod lighting;
 pub mod ui;
 pub mod decals;
 pub mod net;
+pub mod scripting;
 
 // Re-export commonly used types
 pub use core::{Engine, EngineConfig, GameState};
@@ -49,6 +50,7 @@ pub use lighting::{LightManager, PointLight, SpotLight, DirectionalLight, GpuLig
 pub use ui::{UiCanvas, Rect, Anchor, DamagePopup, UiQuad};
 pub use decals::{Decal, DecalSystem, DecalType};
 pub use net::{NetServer, NetClient, ClientMessage, ServerMessage, EntityState, ChannelType, Snapshot, SnapshotBuffer, ClientPrediction};
+pub use scripting::{ScriptEngine, ScriptEntityState};
 
 // Prelude module for easy imports
 pub mod prelude {
@@ -78,6 +80,7 @@ pub mod prelude {
     pub use crate::ui::{UiCanvas, Rect, Anchor, DamagePopup, UiQuad};
     pub use crate::decals::{Decal, DecalSystem, DecalType};
     pub use crate::net::{NetServer, NetClient, ClientMessage, ServerMessage, EntityState, ChannelType, Snapshot, SnapshotBuffer, ClientPrediction};
+    pub use crate::scripting::{ScriptEngine, ScriptEntityState};
     pub use cgmath::{Point3, Vector3, Quaternion};
 }
 pub use manifold::{
