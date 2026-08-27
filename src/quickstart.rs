@@ -494,17 +494,17 @@ pub fn run_game(mut app: impl GameApp + 'static) {
         fragment: Some(wgpu::FragmentState {
             module: &shader_module, entry_point: "fs_main",
             targets: &[Some(wgpu::ColorTargetState {
-                format: config.format, blend: Some(wgpu::BlendState::REPLACE),
+                format: config.format, blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
         primitive: wgpu::PrimitiveState {
             topology: wgpu::PrimitiveTopology::TriangleList,
-            cull_mode: Some(wgpu::Face::Back), ..Default::default()
+            cull_mode: None, ..Default::default()
         },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: DEPTH_FORMAT, depth_write_enabled: true,
-            depth_compare: wgpu::CompareFunction::Less,
+            depth_compare: wgpu::CompareFunction::LessEqual,
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),
