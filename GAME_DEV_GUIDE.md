@@ -533,6 +533,23 @@ decals.update(ctx.dt);
 let (verts, indices) = decals.build_mesh();
 ```
 
+### 12. Multiplayer Networking & Replication (`metatopia_engine::net`)
+Low-latency UDP client-server networking with snapshot interpolation:
+```rust
+use metatopia_engine::net::*;
+
+// Server Setup (runs at 60Hz tick rate)
+let mut server = NetServer::bind("0.0.0.0:7777", 60).unwrap();
+let client_events = server.poll(now_ms);
+server.broadcast_snapshot(now_ms);
+
+// Client Setup
+let mut client = NetClient::new().unwrap();
+client.connect("127.0.0.1:7777", "Player1").unwrap();
+client.send_input(keys_mask, yaw, pitch, pos, chart_id);
+let server_messages = client.poll(now_ms);
+```
+
 ---
 
 ## UpdateCtx Cheat Sheet
