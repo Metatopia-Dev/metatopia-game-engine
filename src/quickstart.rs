@@ -165,6 +165,11 @@ impl GameVertex {
     pub fn colored(pos: [f32; 3], normal: [f32; 3], color: [f32; 3]) -> Self {
         Self { position: pos, normal, uv: [0.0, 0.0], color, pbr: [0.0, 0.5, 0.0, 0.0] }
     }
+
+    /// Full constructor for GameVertex.
+    pub fn new(pos: [f32; 3], normal: [f32; 3], color: [f32; 3], pbr: [f32; 4]) -> Self {
+        Self { position: pos, normal, uv: [0.0, 0.0], color, pbr }
+    }
 }
 
 // ─── Mesh Builder ──────────────────────────────────────────────────────────

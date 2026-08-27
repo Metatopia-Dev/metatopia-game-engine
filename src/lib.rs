@@ -16,6 +16,10 @@ pub mod scoring;
 pub mod collision;
 pub mod audio;
 pub mod quickstart;
+pub mod particles;
+pub mod physics;
+pub mod geometry;
+pub mod animation;
 
 // Re-export commonly used types
 pub use core::{Engine, EngineConfig, GameState};
@@ -28,7 +32,11 @@ pub use time::{Time, Timer};
 pub use window::{Window, WindowBuilder, WindowEvent};
 pub use scoring::{ScoreTracker, ScoreEvent, HudData};
 pub use collision::{AABB, SphereCollider, Ray, RayHit, Collider, CollisionWorld};
-pub use audio::AudioEngine;
+pub use audio::{AudioEngine, AudioListener, SpatialSoundSource, AttenuationModel, SpatialAudioEngine};
+pub use particles::{Particle, ParticleEmitter, EmitterShape, ParticleSystem};
+pub use physics::{RigidBody, BodyType, PhysicsCollider, GravityField, PhysicsWorld};
+pub use geometry::ProceduralMesh;
+pub use animation::{EaseFunction, Tween, Keyframe, KeyframeTrack, LoopMode, Interpolate};
 
 // Prelude module for easy imports
 pub mod prelude {
@@ -44,9 +52,14 @@ pub mod prelude {
     pub use crate::window::{Window, WindowBuilder, WindowEvent};
     pub use crate::scoring::{ScoreTracker, ScoreEvent, HudData};
     pub use crate::collision::{AABB, SphereCollider, Ray, RayHit, Collider, CollisionWorld};
-    pub use crate::audio::AudioEngine;
+    pub use crate::audio::{AudioEngine, AudioListener, SpatialSoundSource, AttenuationModel, SpatialAudioEngine};
     pub use crate::manifold::{Manifold, Chart, ChartId, Portal, PortalId,
-                              GeometryType, MetricTensor, Geodesic, ManifoldPosition};
+                              GeometryType, MetricTensor, Geodesic, ManifoldPosition,
+                              ManifoldRay, ManifoldRayHit, ManifoldRayTrace, ManifoldRaycaster};
+    pub use crate::particles::{Particle, ParticleEmitter, EmitterShape, ParticleSystem};
+    pub use crate::physics::{RigidBody, BodyType, PhysicsCollider, GravityField, PhysicsWorld};
+    pub use crate::geometry::ProceduralMesh;
+    pub use crate::animation::{EaseFunction, Tween, Keyframe, KeyframeTrack, LoopMode, Interpolate};
     pub use cgmath::{Point3, Vector3, Quaternion};
 }
 pub use manifold::{
@@ -55,6 +68,7 @@ pub use manifold::{
     Portal, PortalId,
     Geodesic, GeodesicPath,
     Metric, MetricTensor, GeometryType,
+    ManifoldRay, ManifoldRayHit, ManifoldRayTrace, ManifoldRaycaster,
 };
 pub use manifold::geodesic::GeodesicRay;
 

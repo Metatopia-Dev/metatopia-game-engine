@@ -8,11 +8,13 @@ pub mod chart;
 pub mod portal;
 pub mod geodesic;
 pub mod metric;
+pub mod raycast;
 
 pub use chart::{Chart, ChartId, LocalCoordinate};
 pub use portal::{Portal, PortalId, PortalConnection};
 pub use geodesic::{Geodesic, GeodesicPath};
 pub use metric::{Metric, MetricTensor, GeometryType};
+pub use raycast::{ManifoldRay, RaySegment, ManifoldRayHit, ManifoldRayTrace, ManifoldRaycaster};
 
 /// A manifold representing the entire non-Euclidean world
 #[derive(Clone)]
@@ -175,6 +177,21 @@ impl Manifold {
         }
     }
     
+    /// Get all portals iterator
+    pub fn portals(&self) -> impl Iterator<Item = &Portal> {
+        self.portals.values()
+    }
+
+    /// Get portal by ID
+    pub fn get_portal(&self, id: PortalId) -> Option<&Portal> {
+        self.portals.get(&id)
+    }
+
+    /// Get chart by ID
+    pub fn get_chart(&self, id: ChartId) -> Option<&Arc<Chart>> {
+        self.charts.get(&id)
+    }
+
     /// Get all charts
     pub fn charts(&self) -> &HashMap<ChartId, Arc<Chart>> {
         &self.charts

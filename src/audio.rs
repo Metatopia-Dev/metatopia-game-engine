@@ -13,6 +13,9 @@
 //! audio.set_music_volume(0.5);
 //! ```
 
+pub mod spatial;
+pub use spatial::{AudioListener, SpatialSoundSource, AttenuationModel, SpatializedAudioSample, SpatialAudioEngine};
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::io::BufReader;

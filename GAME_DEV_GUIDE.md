@@ -388,6 +388,90 @@ metatopia-game-engine/
 
 ---
 
+---
+
+## Advanced Engine Subsystems
+
+### 1. 3D Particle & FX System (`metatopia_engine::particles`)
+Simulate physical particles with custom shapes, gravity, drag, and collision bounce:
+```rust
+use metatopia_engine::particles::*;
+
+// Create particle system
+let mut ps = ParticleSystem::new(1000);
+
+// Burst explosion
+ps.burst(pos, 30, [1.0, 0.2, 0.0, 1.0], [1.0, 1.0, 0.0, 0.0], 10.0, 1.5);
+
+// Update simulation
+ps.update(ctx.dt, Some(&ctx.collision));
+
+// Generate vertex mesh for rendering
+let (verts, indices) = ps.build_mesh();
+```
+
+### 2. Rigid Body Physics Simulation (`metatopia_engine::physics`)
+Simulate dynamic/static bodies with mass, bounciness, friction, and non-Euclidean gravity:
+```rust
+use metatopia_engine::physics::*;
+
+let mut physics = PhysicsWorld::new();
+physics.gravity = GravityField::Constant(Vector3::new(0.0, -9.81, 0.0));
+
+// Add dynamic ball
+let ball_id = physics.add_body(RigidBody::new_sphere(0, pos, 0.5, 1.0));
+
+// Step simulation
+physics.step(ctx.dt);
+```
+
+### 3. 3D Spatial Audio & Portal Propagation (`metatopia_engine::audio::spatial`)
+Calculate stereo attenuation, Doppler shifts, and portal audio transmission:
+```rust
+use metatopia_engine::audio::spatial::*;
+
+let engine = SpatialAudioEngine::new();
+let source = SpatialSoundSource::new(0, sound_pos, ChartId(0));
+let sample = engine.spatial_sample(&source, Some(&manifold));
+
+println!("Left: {}, Right: {}, Pitch: {}", sample.left_volume, sample.right_volume, sample.pitch_shift);
+```
+
+### 4. Procedural 3D Geometry Toolkit (`metatopia_engine::geometry`)
+Generate 3D primitives and heightmap terrains with one call:
+```rust
+use metatopia_engine::geometry::ProceduralMesh;
+
+let (cylinder_v, cylinder_i) = ProceduralMesh::cylinder(1.0, 2.0, 24, [0.0, 1.0, 0.8]);
+let (torus_v, torus_i)       = ProceduralMesh::torus(3.0, 0.6, 32, 16, [1.0, 0.5, 0.0]);
+let (capsule_v, capsule_i)   = ProceduralMesh::capsule(0.5, 2.0, 8, 16, [0.8, 0.2, 1.0]);
+let (terrain_v, terrain_i)   = ProceduralMesh::heightmap_terrain(50.0, 50.0, 32, 32, |x, z| (x*0.2).sin() * (z*0.2).cos() * 2.0, [0.1, 0.7, 0.2]);
+```
+
+### 5. Tweening & Animation Curves (`metatopia_engine::animation`)
+Animate values and transforms smoothly with 18 easing curves:
+```rust
+use metatopia_engine::animation::*;
+
+let mut tween = Tween::new(0.0_f32, 10.0_f32, 2.0, EaseFunction::EaseOutBounce)
+    .with_loop(LoopMode::PingPong);
+
+let current_val = *tween.update(ctx.dt);
+```
+
+### 6. Portal-Aware & Geodesic Raycaster (`metatopia_engine::manifold::raycast`)
+Cast rays that bend along curved Riemannian space or cross portals seamlessly:
+```rust
+use metatopia_engine::manifold::raycast::*;
+
+let ray = ManifoldRay::new(origin, dir, ChartId(0), 100.0);
+if let Some(hit) = ManifoldRaycaster::cast_ray(&manifold, &ray, 8, None) {
+    println!("Hit chart {:?} at {:?} after {} portal traversals", hit.chart, hit.point, hit.portal_traversals);
+}
+```
+
+---
+
 ## UpdateCtx Cheat Sheet
 
 | Method | Returns | Description |
