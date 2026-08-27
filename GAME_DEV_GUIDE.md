@@ -470,6 +470,69 @@ if let Some(hit) = ManifoldRaycaster::cast_ray(&manifold, &ray, 8, None) {
 }
 ```
 
+### 7. Hierarchical 3D Scene Graph (`metatopia_engine::scene`)
+Build parent-child transform trees with dirty-flag matrix caching:
+```rust
+use metatopia_engine::scene::*;
+
+let mut scene = SceneGraph::new();
+let tank = scene.create_node("Tank", None);
+let turret = scene.create_node("Turret", Some(tank));
+scene.set_position(tank, Vector3::new(10.0, 0.0, 0.0));
+scene.set_position(turret, Vector3::new(0.0, 2.0, 0.0));
+scene.update();
+```
+
+### 8. Modular Behavior Tree & Portal A* Pathfinding (`metatopia_engine::ai`)
+AI decision making with Behavior Trees and pathfinding through non-Euclidean portals:
+```rust
+use metatopia_engine::ai::*;
+
+// Behavior Tree
+let mut seq = SequenceNode::new(vec![
+    Box::new(ConditionNode::new(|bb| bb.get_float("hp").unwrap_or(0.0) < 30.0)),
+    Box::new(ActionNode::new(|bb| { /* Retreat logic */ NodeStatus::Success })),
+]);
+
+// Portal A* Navigation Graph
+let mut nav = NavGraph::new();
+let n0 = nav.add_node(pos_chart0, ChartId(0));
+let n1 = nav.add_node(pos_chart1, ChartId(1));
+nav.connect_portal(n0, n1, 1.0);
+let path = nav.find_path(n0, n1);
+```
+
+### 9. Dynamic Multi-Light Manager (`metatopia_engine::lighting`)
+Manage Point, Spot, and Directional lights with GPU buffer packing and culling:
+```rust
+use metatopia_engine::lighting::*;
+
+let mut lights = LightManager::new();
+lights.add_point_light(PointLight::new([0.0, 4.0, 0.0], [1.0, 0.2, 0.8], 3.0, 15.0));
+let (gpu_lights, count) = lights.build_gpu_lights(32);
+```
+
+### 10. 2D/3D Immediate UI & HUD Canvas (`metatopia_engine::ui`)
+Render health bars, crosshairs, floating 3D world damage popups:
+```rust
+use metatopia_engine::ui::*;
+
+let mut ui = UiCanvas::new(width, height);
+ui.draw_progress_bar(Anchor::BottomCenter, (0.0, 30.0), (300.0, 16.0), hp_ratio, [0.0, 1.0, 0.5, 1.0], [0.1, 0.1, 0.1, 0.8]);
+ui.add_damage_popup(target_pos, [1.0, 0.2, 0.2, 1.0], 1.2);
+```
+
+### 11. Projective Surface Decal System (`metatopia_engine::decals`)
+Project bullet holes, blast scorches, and neon glyphs onto surfaces:
+```rust
+use metatopia_engine::decals::*;
+
+let mut decals = DecalSystem::new(200);
+decals.spawn_decal(hit.pos, hit.normal, 0.4, [0.1, 0.1, 0.1, 1.0], 0.0, 10.0, DecalType::BulletHole);
+decals.update(ctx.dt);
+let (verts, indices) = decals.build_mesh();
+```
+
 ---
 
 ## UpdateCtx Cheat Sheet

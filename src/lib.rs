@@ -20,6 +20,11 @@ pub mod particles;
 pub mod physics;
 pub mod geometry;
 pub mod animation;
+pub mod scene;
+pub mod ai;
+pub mod lighting;
+pub mod ui;
+pub mod decals;
 
 // Re-export commonly used types
 pub use core::{Engine, EngineConfig, GameState};
@@ -37,6 +42,11 @@ pub use particles::{Particle, ParticleEmitter, EmitterShape, ParticleSystem};
 pub use physics::{RigidBody, BodyType, PhysicsCollider, GravityField, PhysicsWorld};
 pub use geometry::ProceduralMesh;
 pub use animation::{EaseFunction, Tween, Keyframe, KeyframeTrack, LoopMode, Interpolate};
+pub use scene::{SceneGraph, SceneNode, NodeId};
+pub use ai::{BehaviorNode, SequenceNode, SelectorNode, InverterNode, ActionNode, ConditionNode, NodeStatus, Blackboard, BlackboardValue, NavGraph, NavNode};
+pub use lighting::{LightManager, PointLight, SpotLight, DirectionalLight, GpuLight};
+pub use ui::{UiCanvas, Rect, Anchor, DamagePopup, UiQuad};
+pub use decals::{Decal, DecalSystem, DecalType};
 
 // Prelude module for easy imports
 pub mod prelude {
@@ -60,6 +70,11 @@ pub mod prelude {
     pub use crate::physics::{RigidBody, BodyType, PhysicsCollider, GravityField, PhysicsWorld};
     pub use crate::geometry::ProceduralMesh;
     pub use crate::animation::{EaseFunction, Tween, Keyframe, KeyframeTrack, LoopMode, Interpolate};
+    pub use crate::scene::{SceneGraph, SceneNode, NodeId};
+    pub use crate::ai::{BehaviorNode, SequenceNode, SelectorNode, InverterNode, ActionNode, ConditionNode, NodeStatus, Blackboard, BlackboardValue, NavGraph, NavNode};
+    pub use crate::lighting::{LightManager, PointLight, SpotLight, DirectionalLight, GpuLight};
+    pub use crate::ui::{UiCanvas, Rect, Anchor, DamagePopup, UiQuad};
+    pub use crate::decals::{Decal, DecalSystem, DecalType};
     pub use cgmath::{Point3, Vector3, Quaternion};
 }
 pub use manifold::{
