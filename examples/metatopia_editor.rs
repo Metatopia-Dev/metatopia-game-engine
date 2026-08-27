@@ -2,17 +2,17 @@
 //!
 //! Interactive 3D visual editor with:
 //! - 3D Scene Viewport with infinite grid & transform gizmo
-//! - Entity Outliner & Inspector (transforms, PBR materials, physics)
-//! - Embedded Rhai Scripting Engine with live reload & console
-//! - Play / Edit simulation modes
-//! - Procedural mesh generators (Cube, Sphere, Cylinder, Torus, Capsule, Particles)
+//! - On-screen visual UI (Top Toolbar, Scene Outliner, Property Inspector, Script Console)
+//! - Mouse-clickable UI buttons and outliner items
+//! - Embedded Rhai Scripting Engine with live hot-reload
+//! - Real-time Play / Edit simulation modes
 
 use metatopia_engine::quickstart::*;
 use metatopia_engine::geometry::ProceduralMesh;
 use metatopia_engine::particles::ParticleSystem;
 use metatopia_engine::physics::PhysicsWorld;
 use metatopia_engine::scripting::{ScriptEngine, ScriptEntityState};
-use cgmath::Vector3;
+use cgmath::{Vector3, InnerSpace};
 
 const SHADER_SRC: &str = include_str!("../shaders/editor.wgsl");
 
@@ -24,8 +24,6 @@ pub enum MeshType {
     Cylinder,
     Torus,
     Capsule,
-    ParticleEmitter,
-    PortalFrame,
 }
 
 /// An editable 3D entity in the editor
@@ -159,12 +157,12 @@ impl MetatopiaStudio {
         sphere.script_preset_name = "Color Shift".into();
         entities.push(sphere);
 
-        // 5. Non-Euclidean Portal Gate
-        let mut portal = EditorEntity::new(5, "PortalGate", MeshType::Capsule, [0.0, 2.0, -6.0], [0.7, 0.1, 1.0]);
-        portal.scale = [0.2, 3.0, 2.0];
-        portal.emissive = 3.0;
-        portal.script_preset_name = "Portal Gate".into();
-        entities.push(portal);
+        // 5. Bio Capsule
+        let mut capsule = EditorEntity::new(5, "BioCapsule", MeshType::Capsule, [0.0, 1.8, -5.0], [0.8, 0.2, 1.0]);
+        capsule.scale = [0.6, 1.5, 0.6];
+        capsule.emissive = 1.5;
+        capsule.script_preset_name = "Static".into();
+        entities.push(capsule);
 
         Self {
             entities,
@@ -174,7 +172,7 @@ impl MetatopiaStudio {
             script_engine,
             physics_world: PhysicsWorld::new(),
             particle_system: ParticleSystem::new(1000),
-            status_message: "METATOPIA STUDIO READY. Press [SPACE] to Play/Edit, [1-5] to Spawn Objects, [G] for Scripts.".into(),
+            status_message: "METATOPIA STUDIO READY. Use Toolbar buttons or hotkeys. Right-Click+Drag to fly.".into(),
             status_timer: 5.0,
             current_script_preset: 0,
             camera_initialized: false,
@@ -259,6 +257,13 @@ impl MetatopiaStudio {
         self.status_timer = 4.0;
         println!("[Studio]: {}", msg);
     }
+
+    /// Helper to convert screen pixel coords to NDC `[-1.0, 1.0]`
+    fn pixel_to_ndc(&self, px: f32, py: f32, width: u32, height: u32) -> (f32, f32) {
+        let ndc_x = (px / width as f32) * 2.0 - 1.0;
+        let ndc_y = 1.0 - (py / height as f32) * 2.0;
+        (ndc_x, ndc_y)
+    }
 }
 
 impl GameApp for MetatopiaStudio {
@@ -268,6 +273,16 @@ impl GameApp for MetatopiaStudio {
 
     fn shader_source(&self) -> String {
         SHADER_SRC.to_string()
+    }
+
+    /// Enable dynamic mesh updating every frame so live edits & scripts animate in real time!
+    fn is_dynamic_mesh(&self) -> bool {
+        true
+    }
+
+    /// Leave cursor ungrabbed so the developer can click UI buttons and inspect objects!
+    fn grab_cursor(&self) -> bool {
+        false
     }
 
     fn update(&mut self, ctx: &mut UpdateCtx) {
@@ -286,8 +301,21 @@ impl GameApp for MetatopiaStudio {
             self.status_timer -= ctx.dt;
         }
 
-        // 1. Camera Fly Movement (WASD + Right-click / Free Fly)
-        ctx.default_camera_movement();
+        // 1. Camera Fly Movement (Only when Right Mouse Button is held or WASD)
+        if ctx.mouse_held(winit::event::MouseButton::Right) {
+            ctx.default_camera_movement();
+        } else {
+            // WASD only
+            let speed = ctx.camera.move_speed * ctx.dt;
+            let fwd = ctx.camera.forward();
+            let right = ctx.camera.right();
+            let flat_fwd = Vector3::new(fwd.x, 0.0, fwd.z).normalize() * speed;
+            let flat_right = right * speed;
+            if ctx.key_held(VirtualKey::KeyW) { ctx.camera.position += flat_fwd; }
+            if ctx.key_held(VirtualKey::KeyS) { ctx.camera.position -= flat_fwd; }
+            if ctx.key_held(VirtualKey::KeyA) { ctx.camera.position -= flat_right; }
+            if ctx.key_held(VirtualKey::KeyD) { ctx.camera.position += flat_right; }
+        }
 
         // 2. Play / Edit Mode Toggle (Spacebar)
         if ctx.key_pressed(VirtualKey::Space) {
@@ -303,36 +331,100 @@ impl GameApp for MetatopiaStudio {
             };
         }
 
-        // 3. Selection Navigation (Tab to cycle entities)
+        // 3. Mouse Click on UI Buttons & Outliner
+        if ctx.mouse_pressed(winit::event::MouseButton::Left) {
+            let (m_ndc_x, m_ndc_y) = self.pixel_to_ndc(ctx.mouse_pos().0, ctx.mouse_pos().1, ctx.resolution.0, ctx.resolution.1);
+
+            // Top Bar Buttons
+            if m_ndc_y >= 0.85 && m_ndc_y <= 0.97 {
+                // Play / Edit Button
+                if m_ndc_x >= -0.95 && m_ndc_x <= -0.75 {
+                    self.mode = match self.mode {
+                        EditorMode::Edit => { self.set_status("▶ PLAY MODE ACTIVATED"); EditorMode::Play }
+                        EditorMode::Play => { self.set_status("⏸ EDIT MODE ACTIVATED"); EditorMode::Edit }
+                    };
+                }
+                // +Cube
+                else if m_ndc_x >= -0.72 && m_ndc_x <= -0.60 {
+                    self.spawn_entity(MeshType::Cube, "CyberCube", [0.2, 0.8, 1.0]);
+                }
+                // +Sphere
+                else if m_ndc_x >= -0.58 && m_ndc_x <= -0.46 {
+                    self.spawn_entity(MeshType::Sphere, "NeonSphere", [1.0, 0.2, 0.5]);
+                }
+                // +Cylinder
+                else if m_ndc_x >= -0.44 && m_ndc_x <= -0.32 {
+                    self.spawn_entity(MeshType::Cylinder, "PowerPillar", [1.0, 0.9, 0.1]);
+                }
+                // +Torus
+                else if m_ndc_x >= -0.30 && m_ndc_x <= -0.18 {
+                    self.spawn_entity(MeshType::Torus, "GravityRing", [0.8, 0.2, 1.0]);
+                }
+                // +Capsule
+                else if m_ndc_x >= -0.16 && m_ndc_x <= -0.04 {
+                    self.spawn_entity(MeshType::Capsule, "BioCapsule", [0.1, 1.0, 0.7]);
+                }
+                // Cycle Script
+                else if m_ndc_x >= 0.02 && m_ndc_x <= 0.22 {
+                    self.cycle_script_preset();
+                }
+                // Recompile (R)
+                else if m_ndc_x >= 0.24 && m_ndc_x <= 0.38 {
+                    for entity in &mut self.entities {
+                        if !entity.script_source.is_empty() {
+                            if let Ok(ast) = self.script_engine.compile(&entity.script_source) {
+                                entity.script_ast = Some(ast);
+                            }
+                        }
+                    }
+                    self.set_status("All Scripts Hot-Reloaded.");
+                }
+            }
+
+            // Left Outliner Items (Select entity by clicking)
+            if m_ndc_x >= -0.98 && m_ndc_x <= -0.72 && m_ndc_y >= -0.60 && m_ndc_y <= 0.80 {
+                let rel_y = 0.80 - m_ndc_y;
+                let item_h = 0.10;
+                let clicked_idx = (rel_y / item_h) as usize;
+                if clicked_idx < self.entities.len() {
+                    self.selected_index = clicked_idx;
+                    let name = self.entities[self.selected_index].name.clone();
+                    self.set_status(&format!("Selected Entity: '{}'", name));
+                }
+            }
+
+            // Right Inspector Transform Buttons
+            if m_ndc_x >= 0.72 && m_ndc_x <= 0.98 && m_ndc_y >= 0.20 && m_ndc_y <= 0.75 && !self.entities.is_empty() {
+                let entity = &mut self.entities[self.selected_index];
+                // Check X/Y/Z +/- clicks
+                if m_ndc_y >= 0.50 && m_ndc_y <= 0.58 {
+                    if m_ndc_x >= 0.75 && m_ndc_x <= 0.84 { entity.pos[0] -= 0.5; }
+                    if m_ndc_x >= 0.86 && m_ndc_x <= 0.95 { entity.pos[0] += 0.5; }
+                } else if m_ndc_y >= 0.40 && m_ndc_y <= 0.48 {
+                    if m_ndc_x >= 0.75 && m_ndc_x <= 0.84 { entity.pos[1] -= 0.5; }
+                    if m_ndc_x >= 0.86 && m_ndc_x <= 0.95 { entity.pos[1] += 0.5; }
+                } else if m_ndc_y >= 0.30 && m_ndc_y <= 0.38 {
+                    if m_ndc_x >= 0.75 && m_ndc_x <= 0.84 { entity.pos[2] -= 0.5; }
+                    if m_ndc_x >= 0.86 && m_ndc_x <= 0.95 { entity.pos[2] += 0.5; }
+                }
+                entity.script_state.pos = entity.pos;
+            }
+        }
+
+        // 4. Keyboard Shortcuts
         if ctx.key_pressed(VirtualKey::Tab) && !self.entities.is_empty() {
             self.selected_index = (self.selected_index + 1) % self.entities.len();
             let name = self.entities[self.selected_index].name.clone();
             self.set_status(&format!("Selected Entity: '{}' (Index: {})", name, self.selected_index));
         }
 
-        // 4. Object Spawning Hotkeys (1..5)
-        if ctx.key_pressed(VirtualKey::Digit1) {
-            self.spawn_entity(MeshType::Cube, "CyberCube", [0.2, 0.8, 1.0]);
-        }
-        if ctx.key_pressed(VirtualKey::Digit2) {
-            self.spawn_entity(MeshType::Sphere, "NeonSphere", [1.0, 0.2, 0.5]);
-        }
-        if ctx.key_pressed(VirtualKey::Digit3) {
-            self.spawn_entity(MeshType::Cylinder, "PowerPillar", [1.0, 0.9, 0.1]);
-        }
-        if ctx.key_pressed(VirtualKey::Digit4) {
-            self.spawn_entity(MeshType::Torus, "GravityRing", [0.8, 0.2, 1.0]);
-        }
-        if ctx.key_pressed(VirtualKey::Digit5) {
-            self.spawn_entity(MeshType::Capsule, "BioCapsule", [0.1, 1.0, 0.7]);
-        }
+        if ctx.key_pressed(VirtualKey::Digit1) { self.spawn_entity(MeshType::Cube, "CyberCube", [0.2, 0.8, 1.0]); }
+        if ctx.key_pressed(VirtualKey::Digit2) { self.spawn_entity(MeshType::Sphere, "NeonSphere", [1.0, 0.2, 0.5]); }
+        if ctx.key_pressed(VirtualKey::Digit3) { self.spawn_entity(MeshType::Cylinder, "PowerPillar", [1.0, 0.9, 0.1]); }
+        if ctx.key_pressed(VirtualKey::Digit4) { self.spawn_entity(MeshType::Torus, "GravityRing", [0.8, 0.2, 1.0]); }
+        if ctx.key_pressed(VirtualKey::Digit5) { self.spawn_entity(MeshType::Capsule, "BioCapsule", [0.1, 1.0, 0.7]); }
+        if ctx.key_pressed(VirtualKey::KeyG) { self.cycle_script_preset(); }
 
-        // 5. Script Preset Cycler (G)
-        if ctx.key_pressed(VirtualKey::KeyG) {
-            self.cycle_script_preset();
-        }
-
-        // 6. Delete Entity (X or Delete)
         if ctx.key_pressed(VirtualKey::KeyX) && !self.entities.is_empty() {
             let removed = self.entities.remove(self.selected_index);
             self.set_status(&format!("Deleted Entity: '{}'", removed.name));
@@ -341,10 +433,9 @@ impl GameApp for MetatopiaStudio {
             }
         }
 
-        // 7. Entity Manipulation with Arrow Keys & Q/E in Edit Mode
+        // 5. Arrow Keys Object Movement in Edit Mode
         if !self.entities.is_empty() {
             let entity = &mut self.entities[self.selected_index];
-
             let move_spd = 6.0 * ctx.dt;
             if ctx.key_held(VirtualKey::ArrowLeft) { entity.pos[0] -= move_spd; }
             if ctx.key_held(VirtualKey::ArrowRight) { entity.pos[0] += move_spd; }
@@ -352,7 +443,6 @@ impl GameApp for MetatopiaStudio {
             if ctx.key_held(VirtualKey::ArrowDown) { entity.pos[2] += move_spd; }
             if ctx.key_held(VirtualKey::PageUp) { entity.pos[1] += move_spd; }
             if ctx.key_held(VirtualKey::PageDown) { entity.pos[1] -= move_spd; }
-
             if ctx.key_held(VirtualKey::KeyQ) { entity.rot[0] += 2.0 * ctx.dt; }
             if ctx.key_held(VirtualKey::KeyE) { entity.rot[0] -= 2.0 * ctx.dt; }
 
@@ -364,24 +454,7 @@ impl GameApp for MetatopiaStudio {
             entity.script_state.emissive = entity.emissive;
         }
 
-        // 8. Re-compile All Scripts (R)
-        if ctx.key_pressed(VirtualKey::KeyR) {
-            for entity in &mut self.entities {
-                if !entity.script_source.is_empty() {
-                    match self.script_engine.compile(&entity.script_source) {
-                        Ok(ast) => {
-                            entity.script_ast = Some(ast);
-                        }
-                        Err(e) => {
-                            self.script_engine.console_logs.lock().unwrap().push(e);
-                        }
-                    }
-                }
-            }
-            self.set_status("All Scripts Re-Compiled & Reloaded.");
-        }
-
-        // 9. Particle Simulation
+        // 6. Particle Burst & Update
         if self.mode == EditorMode::Play {
             self.particle_system.burst(
                 Vector3::new(0.0, 2.5, 0.0),
@@ -394,12 +467,11 @@ impl GameApp for MetatopiaStudio {
         }
         self.particle_system.update(ctx.dt, None);
 
-        // 10. Execute Scripts in Play Mode
+        // 7. Execute Scripts in Play Mode
         if self.mode == EditorMode::Play {
             for entity in &mut self.entities {
                 if let Some(ast) = &entity.script_ast {
                     let _ = self.script_engine.execute_update(ast, &mut entity.script_state, ctx.dt);
-                    // Write back modified properties
                     entity.pos = entity.script_state.pos;
                     entity.rot = entity.script_state.rot;
                     entity.color = entity.script_state.color;
@@ -409,7 +481,6 @@ impl GameApp for MetatopiaStudio {
             }
         }
 
-        // Pass selection ID & mode to Shader Uniforms
         let selected_id = if !self.entities.is_empty() {
             self.entities[self.selected_index].id as f32
         } else {
@@ -421,10 +492,12 @@ impl GameApp for MetatopiaStudio {
     }
 
     fn build_mesh(&self) -> (Vec<GameVertex>, Vec<u32>) {
-        let mut verts = Vec::with_capacity(20000);
-        let mut indices = Vec::with_capacity(40000);
+        let mut verts = Vec::with_capacity(30000);
+        let mut indices = Vec::with_capacity(60000);
 
-        // 1. Grid Floor Plane (100x100)
+        // ── 1. 3D Scene Entities & Grid ────────────────────────────────────
+
+        // Grid Floor Plane (100x100)
         let (plane_v, plane_i) = ProceduralMesh::plane(100.0, 100.0, 20, 20, [0.15, 0.18, 0.22]);
         let base = verts.len() as u32;
         for v in plane_v {
@@ -432,14 +505,13 @@ impl GameApp for MetatopiaStudio {
         }
         for idx in plane_i { indices.push(base + idx); }
 
-        // 2. Render Scene Entities
+        // Render Scene 3D Entities
         for entity in &self.entities {
             let (shape_v, shape_i) = match entity.mesh_type {
                 MeshType::Cube => {
                     let hx = entity.scale[0] * 0.5;
                     let hy = entity.scale[1] * 0.5;
                     let hz = entity.scale[2] * 0.5;
-                    // Cube faces
                     let mut c_v = Vec::new();
                     let mut c_i = Vec::new();
                     let corners = [
@@ -470,18 +542,14 @@ impl GameApp for MetatopiaStudio {
                 MeshType::Torus => {
                     ProceduralMesh::torus(entity.scale[0] * 0.8, entity.scale[0] * 0.25, 24, 12, entity.color)
                 }
-                MeshType::Capsule | MeshType::PortalFrame => {
+                MeshType::Capsule => {
                     ProceduralMesh::capsule(entity.scale[0] * 0.4, entity.scale[1], 8, 16, entity.color)
-                }
-                MeshType::ParticleEmitter => {
-                    ProceduralMesh::torus(0.6, 0.1, 16, 8, entity.color)
                 }
             };
 
             let base_offset = verts.len() as u32;
             let pbr = [entity.metallic, entity.roughness, entity.emissive, entity.id as f32];
 
-            // Apply Entity Transform (Translation & Yaw Rotation)
             let cos_yaw = entity.rot[0].cos();
             let sin_yaw = entity.rot[0].sin();
 
@@ -506,7 +574,7 @@ impl GameApp for MetatopiaStudio {
             }
         }
 
-        // 3. Selection Transform Gizmo (Red X, Green Y, Blue Z axes)
+        // Selection Transform Gizmo (Red X, Green Y, Blue Z axes)
         if !self.entities.is_empty() && self.mode == EditorMode::Edit {
             let entity = &self.entities[self.selected_index];
             let ep = entity.pos;
@@ -541,11 +609,96 @@ impl GameApp for MetatopiaStudio {
             for idx in z_i { indices.push(z_base + idx); }
         }
 
-        // 4. Particle Mesh
+        // Particle Mesh
         let (p_v, p_i) = self.particle_system.build_mesh();
         let p_base = verts.len() as u32;
         verts.extend(p_v);
         for idx in p_i { indices.push(p_base + idx); }
+
+        // ── 2. 2D Visual Studio UI Overlay ─────────────────────────────────
+
+        let mut add_ui_rect = |min_x: f32, min_y: f32, max_x: f32, max_y: f32, color: [f32; 3], opacity: f32| {
+            let base_idx = verts.len() as u32;
+            // 4 corners in NDC space
+            let pbr = [0.0, 0.0, opacity, -1.0]; // w = -1.0 flags 2D screen UI
+            let norm = [0.0, 0.0, 1.0];
+
+            verts.push(GameVertex::new([min_x, min_y, 0.0], norm, color, pbr));
+            verts.push(GameVertex::new([max_x, min_y, 0.0], norm, color, pbr));
+            verts.push(GameVertex::new([max_x, max_y, 0.0], norm, color, pbr));
+            verts.push(GameVertex::new([min_x, max_y, 0.0], norm, color, pbr));
+
+            indices.extend_from_slice(&[base_idx, base_idx + 1, base_idx + 2, base_idx, base_idx + 2, base_idx + 3]);
+        };
+
+        // A. Top Menu / Toolbar Background Panel
+        add_ui_rect(-1.0, 0.84, 1.0, 1.0, [0.06, 0.07, 0.09], 0.92);
+        add_ui_rect(-1.0, 0.835, 1.0, 0.84, [0.15, 0.18, 0.24], 1.0); // Bottom border
+
+        // Play / Edit Mode Button (Green for Play, Orange for Edit)
+        let (mode_color, _mode_label) = match self.mode {
+            EditorMode::Edit => ([0.9, 0.5, 0.1], "EDIT MODE"),
+            EditorMode::Play => ([0.1, 0.9, 0.4], "PLAY MODE"),
+        };
+        add_ui_rect(-0.95, 0.87, -0.75, 0.97, mode_color, 0.9);
+
+        // Primitive Spawn Buttons
+        add_ui_rect(-0.72, 0.87, -0.60, 0.97, [0.12, 0.15, 0.22], 0.85); // +Cube [1]
+        add_ui_rect(-0.58, 0.87, -0.46, 0.97, [0.12, 0.15, 0.22], 0.85); // +Sphere [2]
+        add_ui_rect(-0.44, 0.87, -0.32, 0.97, [0.12, 0.15, 0.22], 0.85); // +Cylinder [3]
+        add_ui_rect(-0.30, 0.87, -0.18, 0.97, [0.12, 0.15, 0.22], 0.85); // +Torus [4]
+        add_ui_rect(-0.16, 0.87, -0.04, 0.97, [0.12, 0.15, 0.22], 0.85); // +Capsule [5]
+
+        // Script Cycle & Hot-Reload Buttons
+        add_ui_rect(0.02, 0.87, 0.22, 0.97, [0.4, 0.1, 0.8], 0.85); // [Script: Preset]
+        add_ui_rect(0.24, 0.87, 0.38, 0.97, [0.1, 0.6, 0.9], 0.85); // [Reload (R)]
+
+        // B. Left Scene Outliner Panel
+        add_ui_rect(-0.98, -0.60, -0.72, 0.80, [0.07, 0.08, 0.11], 0.88);
+        add_ui_rect(-0.98, 0.74, -0.72, 0.80, [0.12, 0.15, 0.20], 1.0); // Outliner Header
+
+        // Outliner entity rows
+        for (i, entity) in self.entities.iter().enumerate().take(8) {
+            let row_top = 0.72 - (i as f32 * 0.09);
+            let row_bot = row_top - 0.075;
+            let is_selected = i == self.selected_index;
+            let row_color = if is_selected { [0.2, 0.4, 0.7] } else { [0.10, 0.12, 0.16] };
+            let opacity = if is_selected { 0.95 } else { 0.6 };
+
+            add_ui_rect(-0.96, row_bot, -0.74, row_top, row_color, opacity);
+            // Color marker dot on the left
+            add_ui_rect(-0.955, row_bot + 0.015, -0.935, row_top - 0.015, entity.color, 1.0);
+        }
+
+        // C. Right Property Inspector Panel
+        add_ui_rect(0.72, -0.60, 0.98, 0.80, [0.07, 0.08, 0.11], 0.88);
+        add_ui_rect(0.72, 0.74, 0.98, 0.80, [0.12, 0.15, 0.20], 1.0); // Inspector Header
+
+        if !self.entities.is_empty() {
+            let selected = &self.entities[self.selected_index];
+            // Entity Color Swatch Preview
+            add_ui_rect(0.75, 0.62, 0.95, 0.70, selected.color, 1.0);
+
+            // Transform Adjustment Buttons (X-, X+, Y-, Y+, Z-, Z+)
+            add_ui_rect(0.75, 0.50, 0.84, 0.57, [0.8, 0.2, 0.2], 0.85); // X-
+            add_ui_rect(0.86, 0.50, 0.95, 0.57, [0.8, 0.2, 0.2], 0.85); // X+
+
+            add_ui_rect(0.75, 0.40, 0.84, 0.47, [0.2, 0.8, 0.2], 0.85); // Y-
+            add_ui_rect(0.86, 0.40, 0.95, 0.47, [0.2, 0.8, 0.2], 0.85); // Y+
+
+            add_ui_rect(0.75, 0.30, 0.84, 0.37, [0.2, 0.4, 0.9], 0.85); // Z-
+            add_ui_rect(0.86, 0.30, 0.95, 0.37, [0.2, 0.4, 0.9], 0.85); // Z+
+
+            // Attached Script Box
+            add_ui_rect(0.75, 0.15, 0.95, 0.25, [0.25, 0.15, 0.35], 0.85);
+        }
+
+        // D. Bottom Script Console & Status Bar Panel
+        add_ui_rect(-0.98, -0.96, 0.98, -0.65, [0.05, 0.06, 0.08], 0.92);
+        add_ui_rect(-0.98, -0.66, 0.98, -0.65, [0.18, 0.22, 0.30], 1.0); // Border
+
+        // Active Status Pill (Green)
+        add_ui_rect(-0.96, -0.73, -0.70, -0.68, [0.1, 0.8, 0.4], 0.9);
 
         (verts, indices)
     }
@@ -555,17 +708,23 @@ fn main() {
     println!("============================================================");
     println!("  METATOPIA STUDIO — 3D Game Editor & Rhai Scripting Suite");
     println!("============================================================");
+    println!(" Features:");
+    println!("   • Live 3D Viewport with Infinite Grid & Transform Gizmo");
+    println!("   • Visual On-Screen Toolbar, Outliner, & Inspector");
+    println!("   • Embedded Rhai Scripting Engine with Hot-Reload");
+    println!("   • Play / Edit Real-Time Simulation Modes");
     println!(" Controls:");
-    println!("   WASD + Mouse   : Fly / Orbit 3D Camera");
-    println!("   SPACE          : Toggle [PLAY] / [EDIT] simulation modes");
-    println!("   TAB            : Cycle selection through scene entities");
+    println!("   Mouse Left Click : Click Toolbar / Outliner / Inspector Buttons");
+    println!("   Mouse Right Drag : Orbit / Fly Camera");
+    println!("   SPACE            : Toggle [PLAY] / [EDIT] simulation modes");
+    println!("   TAB              : Cycle selection through scene entities");
     println!("   1 / 2 / 3 / 4 / 5 : Spawn Cube / Sphere / Cylinder / Torus / Capsule");
-    println!("   G              : Cycle Rhai Script Presets on selected object");
-    println!("   R              : Recompile and Hot-Reload all Rhai scripts");
-    println!("   Arrow Keys     : Translate selected object (X / Z)");
-    println!("   PgUp / PgDown  : Translate selected object vertically (Y)");
-    println!("   Q / E          : Rotate selected object");
-    println!("   X              : Delete selected object");
+    println!("   G                : Cycle Rhai Script Presets on selected object");
+    println!("   R                : Recompile and Hot-Reload all Rhai scripts");
+    println!("   Arrow Keys       : Translate selected object (X / Z)");
+    println!("   PgUp / PgDown    : Translate selected object vertically (Y)");
+    println!("   Q / E            : Rotate selected object");
+    println!("   X                : Delete selected object");
     println!("============================================================");
 
     run_game(MetatopiaStudio::new());

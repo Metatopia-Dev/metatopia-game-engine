@@ -268,7 +268,9 @@ pub struct UpdateCtx<'a> {
     keys_held: &'a HashSet<KeyCode>,
     keys_just_pressed: &'a HashSet<KeyCode>,
     mouse_just_pressed: &'a HashSet<WinitMouseButton>,
+    mouse_held_set: &'a HashSet<WinitMouseButton>,
     mouse_delta_val: (f32, f32),
+    mouse_pos_val: (f32, f32),
     quit_flag: &'a mut bool,
 }
 
@@ -279,6 +281,10 @@ impl<'a> UpdateCtx<'a> {
     pub fn key_pressed(&self, key: VirtualKey) -> bool { self.keys_just_pressed.contains(&key) }
     /// Returns `true` only on the frame a mouse button was clicked.
     pub fn mouse_pressed(&self, btn: WinitMouseButton) -> bool { self.mouse_just_pressed.contains(&btn) }
+    /// Returns `true` if the mouse button is currently held down.
+    pub fn mouse_held(&self, btn: WinitMouseButton) -> bool { self.mouse_held_set.contains(&btn) }
+    /// Current mouse cursor position in window coordinates (pixels).
+    pub fn mouse_pos(&self) -> (f32, f32) { self.mouse_pos_val }
     /// Signal the game to exit.
     pub fn quit(&mut self) { *self.quit_flag = true; }
 
@@ -330,6 +336,12 @@ pub trait GameApp {
 
     /// Called every frame. Handle input, update game logic, write to `ctx.scene`.
     fn update(&mut self, ctx: &mut UpdateCtx);
+
+    /// Whether the mesh is dynamic and rebuilt every frame. Default: false.
+    fn is_dynamic_mesh(&self) -> bool { false }
+
+    /// Whether mouse clicks automatically grab the cursor for FPS camera. Default: true.
+    fn grab_cursor(&self) -> bool { true }
 
     /// Return the WGSL shader source. Default loads `shaders/template_game.wgsl`.
     fn shader_source(&self) -> String {
@@ -419,15 +431,15 @@ pub fn run_game(mut app: impl GameApp + 'static) {
 
     // ── Mesh ───────────────────────────────────────────────────────
     let (vertices, indices) = app.build_mesh();
-    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let mut vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Vertices"), contents: bytemuck::cast_slice(&vertices),
         usage: wgpu::BufferUsages::VERTEX,
     });
-    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let mut index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Indices"), contents: bytemuck::cast_slice(&indices),
         usage: wgpu::BufferUsages::INDEX,
     });
-    let num_indices = indices.len() as u32;
+    let mut num_indices = indices.len() as u32;
 
     // ── Uniforms ───────────────────────────────────────────────────
     let mut camera_uniform = CameraUniform { view_proj: [[0.0;4];4], view_position: [0.0;4] };
@@ -507,12 +519,17 @@ pub fn run_game(mut app: impl GameApp + 'static) {
     let mut keys_held: HashSet<KeyCode> = HashSet::new();
     let mut keys_just_pressed: HashSet<KeyCode> = HashSet::new();
     let mut mouse_just_pressed: HashSet<WinitMouseButton> = HashSet::new();
+    let mut mouse_held_set: HashSet<WinitMouseButton> = HashSet::new();
     let mut mouse_delta: (f32, f32) = (0.0, 0.0);
+    let mut mouse_pos: (f32, f32) = (0.0, 0.0);
     let mut quit = false;
     let start = Instant::now();
     let mut last_frame = Instant::now();
     let mut cursor_grabbed = false;
     let mut frame_count: u64 = 0;
+
+    let should_grab_cursor = app.grab_cursor();
+    let is_dynamic_mesh = app.is_dynamic_mesh();
 
     app.init();
 
@@ -533,6 +550,9 @@ pub fn run_game(mut app: impl GameApp + 'static) {
                         depth_view = create_depth_texture(&device, s.width, s.height);
                     }
                 }
+                WindowEvent::CursorMoved { position, .. } => {
+                    mouse_pos = (position.x as f32, position.y as f32);
+                }
                 WindowEvent::KeyboardInput { event: ke, .. } => {
                     if let PhysicalKey::Code(code) = ke.physical_key {
                         match ke.state {
@@ -546,12 +566,20 @@ pub fn run_game(mut app: impl GameApp + 'static) {
                         }
                     }
                 }
-                WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => {
-                    mouse_just_pressed.insert(*button);
-                    if !cursor_grabbed {
-                        let _ = window.set_cursor_grab(winit::window::CursorGrabMode::Confined);
-                        window.set_cursor_visible(false);
-                        cursor_grabbed = true;
+                WindowEvent::MouseInput { state, button, .. } => {
+                    match state {
+                        ElementState::Pressed => {
+                            mouse_just_pressed.insert(*button);
+                            mouse_held_set.insert(*button);
+                            if should_grab_cursor && !cursor_grabbed {
+                                let _ = window.set_cursor_grab(winit::window::CursorGrabMode::Confined);
+                                window.set_cursor_visible(false);
+                                cursor_grabbed = true;
+                            }
+                        }
+                        ElementState::Released => {
+                            mouse_held_set.remove(button);
+                        }
                     }
                 }
                 WindowEvent::RedrawRequested => {
@@ -562,9 +590,11 @@ pub fn run_game(mut app: impl GameApp + 'static) {
 
                     // Auto-fill params.x with time
                     scene_uniform.params[0] = elapsed;
-                    // Auto-fill hud_info with resolution
+                    // Auto-fill hud_info with resolution & mouse pos
                     scene_uniform.hud_info[0] = config.width as f32;
                     scene_uniform.hud_info[1] = config.height as f32;
+                    scene_uniform.hud_info[2] = mouse_pos.0;
+                    scene_uniform.hud_info[3] = mouse_pos.1;
 
                     // Call the user's update
                     {
@@ -578,10 +608,28 @@ pub fn run_game(mut app: impl GameApp + 'static) {
                             keys_held: &keys_held,
                             keys_just_pressed: &keys_just_pressed,
                             mouse_just_pressed: &mouse_just_pressed,
+                            mouse_held_set: &mouse_held_set,
                             mouse_delta_val: mouse_delta,
+                            mouse_pos_val: mouse_pos,
                             quit_flag: &mut quit,
                         };
                         app.update(&mut ctx);
+                    }
+
+                    // Dynamic mesh rebuild if enabled
+                    if is_dynamic_mesh {
+                        let (new_verts, new_indices) = app.build_mesh();
+                        if !new_indices.is_empty() {
+                            vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("Dynamic Vertices"), contents: bytemuck::cast_slice(&new_verts),
+                                usage: wgpu::BufferUsages::VERTEX,
+                            });
+                            index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("Dynamic Indices"), contents: bytemuck::cast_slice(&new_indices),
+                                usage: wgpu::BufferUsages::INDEX,
+                            });
+                            num_indices = new_indices.len() as u32;
+                        }
                     }
 
                     frame_count += 1;
@@ -642,7 +690,8 @@ pub fn run_game(mut app: impl GameApp + 'static) {
                 _ => {}
             },
             Event::DeviceEvent { event: DeviceEvent::MouseMotion { delta }, .. } => {
-                if cursor_grabbed {
+                let can_look = cursor_grabbed || (!should_grab_cursor && mouse_held_set.contains(&WinitMouseButton::Right));
+                if can_look {
                     camera.yaw += delta.0 as f32 * camera.look_sensitivity;
                     camera.pitch = (camera.pitch - delta.1 as f32 * camera.look_sensitivity)
                         .clamp(-1.5, 1.5);
