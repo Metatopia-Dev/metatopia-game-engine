@@ -79,3 +79,7 @@ path = "examples/cyber_arena_fps.rs"
 [[example]]
 name = "metatopia_editor"
 path = "examples/metatopia_editor.rs"
+
+[[example]]
+name = "metatopia_vr_quest"
+path = "examples/metatopia_vr_quest.rs"

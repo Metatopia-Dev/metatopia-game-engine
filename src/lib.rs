@@ -27,6 +27,7 @@ pub mod ui;
 pub mod decals;
 pub mod net;
 pub mod scripting;
+pub mod vr;
 
 // Re-export commonly used types
 pub use core::{Engine, EngineConfig, GameState};
@@ -51,6 +52,7 @@ pub use ui::{UiCanvas, Rect, Anchor, DamagePopup, UiQuad};
 pub use decals::{Decal, DecalSystem, DecalType};
 pub use net::{NetServer, NetClient, ClientMessage, ServerMessage, EntityState, ChannelType, Snapshot, SnapshotBuffer, ClientPrediction};
 pub use scripting::{ScriptEngine, ScriptEntityState};
+pub use vr::{StereoCameraRig, StereoMode, Eye, VrHeadPose, VrController, VrHand, VrTrackingContext};
 
 // Prelude module for easy imports
 pub mod prelude {
@@ -81,6 +83,7 @@ pub mod prelude {
     pub use crate::decals::{Decal, DecalSystem, DecalType};
     pub use crate::net::{NetServer, NetClient, ClientMessage, ServerMessage, EntityState, ChannelType, Snapshot, SnapshotBuffer, ClientPrediction};
     pub use crate::scripting::{ScriptEngine, ScriptEntityState};
+    pub use crate::vr::{StereoCameraRig, StereoMode, Eye, VrHeadPose, VrController, VrHand, VrTrackingContext};
     pub use cgmath::{Point3, Vector3, Quaternion};
 }
 pub use manifold::{

@@ -145,6 +145,22 @@ GPU-rendered non-Euclidean movie theater with 5 viewing spaces, procedural movie
 cargo run --release --example vr_netflix_hyperbolic
 ```
 
+---
+
+### 7. Metatopia VR — Meta Quest 3S & PCVR Stereoscopic 3D (`metatopia_vr_quest`)
+Full 360° Stereoscopic 3D Virtual Reality experience designed for the **Meta Quest 3S** (and PCVR headsets via Quest Link / Virtual Desktop).
+
+- **Dual-Eye SBS 3D**: Side-by-Side Left & Right eye parallax with GPU split-viewport mapping
+- **IPD Tuning**: In-game millimeter adjustment (55mm to 72mm) matching your physical Quest 3S lenses
+- **Non-Euclidean VR**: Walk through glowing portals connecting Euclidean, Hyperbolic, and Spherical curved spaces
+- **6-DoF Rig**: Real-time head tracking and 3D spatial particle bursts
+
+```bash
+cargo run --release --example metatopia_vr_quest
+```
+
+**Controls**: WASD + Mouse Fly · V Toggle VR Side-by-Side 3D · [ / ] Adjust IPD · F Cycle FOV (90° / 100° / 110°)
+
 **Controls**: WASD Move · Mouse Look · 1–5 Switch Space · Tab Cycle Screen · Click Play/Pause
 
 ---
