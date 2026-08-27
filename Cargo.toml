@@ -68,3 +68,7 @@ path = "examples/fractal_explorer.rs"
 [[example]]
 name = "my_first_game"
 path = "examples/my_first_game.rs"
+
+[[example]]
+name = "cyber_arena_fps"
+path = "examples/cyber_arena_fps.rs"

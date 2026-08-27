@@ -84,7 +84,23 @@ cargo run --release --example pest_control_sim
 
 ---
 
-### 3. Mandelbulb Fractal Explorer (`fractal_explorer`)
+### 3. CYBERSHOCK: Neon Grid Arena (`cyber_arena_fps`)
+Fast-paced retro-futuristic 3D Cyberpunk FPS with 3 distinct sci-fi weapons, intelligent enemy swarms, quantum boss fight, procedural sound synthesis, and real-time GPU neon lighting.
+
+- **3 Weapons**: Plasma Rifle (rapid laser bursts), Scatter Cannon (neon shotgun), Heavy Railgun (instant piercing beam)
+- **Enemy AI**: Neon Drones (swarming), Cyber Tanks (armored bruisers), Phantom Snipers (laser snipers), Quantum Hex-Core Boss
+- **Combat Mechanics**: Boost Dash (<kbd>Shift</kbd>), Jump (<kbd>Space</kbd>), Hitmarkers, Health/Shield gauges, Score combo chains, Powerups (Medkits, Shields, Ammo, Overcharge 2x Damage)
+- **Visuals & Audio**: PBR cyber grid floor with player distance ripple, holographic HUD, procedural synth sound synthesis (10 synthesized SFX via Rodio)
+
+```bash
+cargo run --release --example cyber_arena_fps
+```
+
+**Controls**: WASD Move · Mouse Aim · Left Click Fire · 1/2/3/Q Switch Weapon · R Reload · Shift Dash · Space Jump · Enter Restart
+
+---
+
+### 4. Mandelbulb Fractal Explorer (`fractal_explorer`)
 Real-time 3D fractal rendered via GPU ray marching with orbit camera, 5 color palettes, adjustable power parameter, and audio-reactive pulsation.
 
 - **Ray Marching**: 120-step march through Mandelbulb SDF
@@ -100,7 +116,7 @@ cargo run --release --example fractal_explorer
 
 ---
 
-### 4. VR Netflix — Hyperbolic Cinema (`vr_netflix_hyperbolic`)
+### 5. VR Netflix — Hyperbolic Cinema (`vr_netflix_hyperbolic`)
 GPU-rendered non-Euclidean movie theater with 5 viewing spaces, procedural movie screens, and space-specific audio drones.
 
 - **Hyperbolic Lobby** 🟣: 8 screens on Poincaré disk with hyperbolic 7-fold tiling floor
@@ -117,21 +133,21 @@ cargo run --release --example vr_netflix_hyperbolic
 
 ---
 
-### 5. Basic Graphics (`basic_graphics`)
+### 6. Basic Graphics (`basic_graphics`)
 Minimal WGPU rendering setup demonstrating the engine's shader pipeline.
 
 ```bash
 cargo run --release --example basic_graphics
 ```
 
-### 6. Simple Demo (`simple_demo`)
+### 7. Simple Demo (`simple_demo`)
 Console-based demonstration of the manifold, ECS, and portal systems without GPU rendering.
 
 ```bash
 cargo run --release --example simple_demo
 ```
 
-### 7. My First Game — Quickstart Template (`my_first_game`)
+### 8. My First Game — Quickstart Template (`my_first_game`)
 Minimal ~130-line game demonstrating the zero-boilerplate `quickstart` module. Walk over colored cubes to collect them.
 
 ```bash

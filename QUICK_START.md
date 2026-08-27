@@ -98,7 +98,24 @@ cargo run --example pest_control_sim --release
 - Shift - Move down
 - ESC - Quit
 
-#### Option D: VR Netflix in Hyperbolic Space
+#### Option D: CYBERSHOCK: Neon Grid Arena (3D Cyberpunk FPS)
+Action-packed sci-fi arena shooter with 3 weapons, enemy waves, boss battles, powerups, dash boost, and synthwave audio:
+```bash
+cargo run --example cyber_arena_fps --release
+```
+
+**Controls:**
+- WASD - Move
+- Mouse - Aim & Look
+- Left Click - Fire active weapon
+- 1 / 2 / 3 or Q - Switch weapons (1: Plasma Rifle, 2: Scatter Cannon, 3: Heavy Railgun)
+- R - Reload
+- Shift - Cyber Dash / Boost
+- Space - Jump
+- Enter - Restart game after Game Over / Victory
+- ESC - Quit
+
+#### Option E: VR Netflix in Hyperbolic Space
 Infinite movie theaters without overlap:
 ```bash
 cargo run --example vr_netflix_hyperbolic --release
@@ -121,7 +138,7 @@ cargo run --example vr_netflix_hyperbolic --release
 - +/- - Ambient brightness
 - ESC - Quit
 
-#### Option E: Mandelbulb Fractal Explorer
+#### Option F: Mandelbulb Fractal Explorer
 Real-time 3D fractal rendered via GPU ray marching:
 ```bash
 cargo run --example fractal_explorer --release
@@ -136,13 +153,13 @@ cargo run --example fractal_explorer --release
 - R - Reset view
 - ESC - Quit
 
-#### Option F: Basic Graphics
+#### Option G: Basic Graphics
 Minimal WGPU rendering setup demonstrating the engine's shader pipeline:
 ```bash
 cargo run --example basic_graphics --release
 ```
 
-#### Option G: Simple Demo
+#### Option H: Simple Demo
 Console-based demonstration of the manifold, ECS, and portal systems without GPU rendering:
 ```bash
 cargo run --example simple_demo --release
