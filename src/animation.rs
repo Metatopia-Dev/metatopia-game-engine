@@ -1,7 +1,10 @@
-//! Tweening and Animation Curve Engine
+//! Tweening, Skeletal Rigging, and Animation Curve Engine
 //!
 //! Provides 18 easing curves (Linear, Quad, Cubic, Sine, Expo, Elastic, Bounce, Back),
-//! property tweeners (`f32`, vectors, colors), keyframe tracks, and loop modes.
+//! property tweeners, skeletal forward kinematics, GPU skinning palettes, and Two-Bone IK.
+
+pub mod skeletal;
+pub use skeletal::{Bone, Skeleton, TwoBoneIk};
 
 use std::f32::consts::PI;
 use cgmath::{Point3, Vector3};

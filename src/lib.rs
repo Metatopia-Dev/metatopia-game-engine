@@ -28,11 +28,15 @@ pub mod decals;
 pub mod net;
 pub mod scripting;
 pub mod vr;
+pub mod assets;
+pub mod atmosphere;
+pub mod terrain;
+pub mod wasm;
 
 // Re-export commonly used types
 pub use core::{Engine, EngineConfig, GameState};
 pub use ecs::{World, Entity, Component, Velocity, Renderable, Transform as EcsTransform, TransformSystem, PortalTransitionSystem};
-pub use graphics::{Renderer, RenderContext, Color, Mesh, Vertex, Camera, camera::FPSCameraController};
+pub use graphics::{Renderer, RenderContext, Color, Mesh, Vertex, Camera, camera::FPSCameraController, ShaderGraph, ShaderNode, ShaderNodeType, NodeConnection};
 pub use input::{InputManager, InputEvent, KeyCode, MouseButton, GamepadButton, GamepadAxis};
 pub use math::{Vec2, Vec3, Mat4, Transform};
 pub use resources::{ResourceManager, AssetLoader};
@@ -42,9 +46,9 @@ pub use scoring::{ScoreTracker, ScoreEvent, HudData};
 pub use collision::{AABB, SphereCollider, Ray, RayHit, Collider, CollisionWorld};
 pub use audio::{AudioEngine, AudioListener, SpatialSoundSource, AttenuationModel, SpatialAudioEngine};
 pub use particles::{Particle, ParticleEmitter, EmitterShape, ParticleSystem};
-pub use physics::{RigidBody, BodyType, PhysicsCollider, GravityField, PhysicsWorld};
+pub use physics::{RigidBody, BodyType, PhysicsCollider, GravityField, PhysicsWorld, RaycastVehicle, WheelSuspension};
 pub use geometry::ProceduralMesh;
-pub use animation::{EaseFunction, Tween, Keyframe, KeyframeTrack, LoopMode, Interpolate};
+pub use animation::{EaseFunction, Tween, Keyframe, KeyframeTrack, LoopMode, Interpolate, Bone, Skeleton, TwoBoneIk};
 pub use scene::{SceneGraph, SceneNode, NodeId};
 pub use ai::{BehaviorNode, SequenceNode, SelectorNode, InverterNode, ActionNode, ConditionNode, NodeStatus, Blackboard, BlackboardValue, NavGraph, NavNode};
 pub use lighting::{LightManager, PointLight, SpotLight, DirectionalLight, GpuLight};
@@ -53,6 +57,10 @@ pub use decals::{Decal, DecalSystem, DecalType};
 pub use net::{NetServer, NetClient, ClientMessage, ServerMessage, EntityState, ChannelType, Snapshot, SnapshotBuffer, ClientPrediction};
 pub use scripting::{ScriptEngine, ScriptEntityState};
 pub use vr::{StereoCameraRig, StereoMode, Eye, VrHeadPose, VrController, VrHand, VrTrackingContext};
+pub use assets::{SceneDocument, SceneEntityData, SceneEnvironmentData, LoadedMesh, ModelLoader};
+pub use atmosphere::{TimeOfDay, VolumetricFog, AtmosphereController};
+pub use terrain::{VoxelType, VoxelChunk};
+pub use wasm::{WasmConfig, WebXrSession, WasmExportRunner};
 
 // Prelude module for easy imports
 pub mod prelude {
@@ -60,7 +68,7 @@ pub mod prelude {
     pub use crate::ecs::{World, Entity, Component, Velocity, Renderable,
                          Transform as EcsTransform, TransformSystem, PortalTransitionSystem};
     pub use crate::graphics::{Renderer, RenderContext, Color, Mesh, Vertex,
-                              Camera, camera::FPSCameraController};
+                              Camera, camera::FPSCameraController, ShaderGraph, ShaderNode, ShaderNodeType, NodeConnection};
     pub use crate::input::{InputManager, InputEvent, KeyCode, MouseButton, GamepadButton, GamepadAxis};
     pub use crate::math::{Vec2, Vec3, Mat4, Transform};
     pub use crate::resources::{ResourceManager, AssetLoader};
@@ -73,9 +81,9 @@ pub mod prelude {
                               GeometryType, MetricTensor, Geodesic, ManifoldPosition,
                               ManifoldRay, ManifoldRayHit, ManifoldRayTrace, ManifoldRaycaster};
     pub use crate::particles::{Particle, ParticleEmitter, EmitterShape, ParticleSystem};
-    pub use crate::physics::{RigidBody, BodyType, PhysicsCollider, GravityField, PhysicsWorld};
+    pub use crate::physics::{RigidBody, BodyType, PhysicsCollider, GravityField, PhysicsWorld, RaycastVehicle, WheelSuspension};
     pub use crate::geometry::ProceduralMesh;
-    pub use crate::animation::{EaseFunction, Tween, Keyframe, KeyframeTrack, LoopMode, Interpolate};
+    pub use crate::animation::{EaseFunction, Tween, Keyframe, KeyframeTrack, LoopMode, Interpolate, Bone, Skeleton, TwoBoneIk};
     pub use crate::scene::{SceneGraph, SceneNode, NodeId};
     pub use crate::ai::{BehaviorNode, SequenceNode, SelectorNode, InverterNode, ActionNode, ConditionNode, NodeStatus, Blackboard, BlackboardValue, NavGraph, NavNode};
     pub use crate::lighting::{LightManager, PointLight, SpotLight, DirectionalLight, GpuLight};
@@ -84,6 +92,10 @@ pub mod prelude {
     pub use crate::net::{NetServer, NetClient, ClientMessage, ServerMessage, EntityState, ChannelType, Snapshot, SnapshotBuffer, ClientPrediction};
     pub use crate::scripting::{ScriptEngine, ScriptEntityState};
     pub use crate::vr::{StereoCameraRig, StereoMode, Eye, VrHeadPose, VrController, VrHand, VrTrackingContext};
+    pub use crate::assets::{SceneDocument, SceneEntityData, SceneEnvironmentData, LoadedMesh, ModelLoader};
+    pub use crate::atmosphere::{TimeOfDay, VolumetricFog, AtmosphereController};
+    pub use crate::terrain::{VoxelType, VoxelChunk};
+    pub use crate::wasm::{WasmConfig, WebXrSession, WasmExportRunner};
     pub use cgmath::{Point3, Vector3, Quaternion};
 }
 pub use manifold::{

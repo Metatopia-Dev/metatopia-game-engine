@@ -161,7 +161,23 @@ cargo run --release --example metatopia_vr_quest
 
 **Controls**: WASD + Mouse Fly · V Toggle VR Side-by-Side 3D · [ / ] Adjust IPD · F Cycle FOV (90° / 100° / 110°)
 
-**Controls**: WASD Move · Mouse Look · 1–5 Switch Space · Tab Cycle Screen · Click Play/Pause
+---
+
+### 8. Metatopia Sandbox — Next-Gen Systems Master Showcase (`metatopia_sandbox`)
+Interactive sandbox running all 7 next-generation engine subsystems in real-time.
+
+- **Dynamic Atmosphere**: Moving Sun/Moon, Rayleigh/Mie color temperature shifts, and height fog
+- **Destructible Voxel Terrain**: Mine craters (<kbd>Left Click</kbd>) and build crystal mountains (<kbd>Right Click</kbd>)
+- **Raycast Cyber Rover**: 4-wheel spring-damper suspension physics vehicle with steering and drift
+- **Two-Bone IK**: Animated procedural robotic arm with analytical inverse kinematics
+- **Shader Graph**: Visual node-based procedural material generation in WGSL
+- **Scene Persistence**: Real-time JSON scene saving (<kbd>F5</kbd>) and loading (<kbd>F9</kbd>)
+
+```bash
+cargo run --release --example metatopia_sandbox
+```
+
+**Controls**: C Drive Rover / Fly Camera · WASD Drive/Fly · Space Handbrake · Left/Right Click Voxel Terraforming · T Day/Night · F5/F9 Save/Load
 
 ---
 

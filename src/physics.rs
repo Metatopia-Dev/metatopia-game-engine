@@ -1,8 +1,10 @@
-//! Rigid body physics simulation engine
+//! Rigid body and Raycast Vehicle physics simulation engine
 //!
-//! Provides dynamic, static, and kinematic rigid bodies with mass, velocity,
-//! impulses, friction, restitution (bouncing), swept collision resolution,
-//! and non-Euclidean curved gravity fields.
+//! Provides dynamic rigid bodies, spring-damper suspension vehicles,
+//! impulses, friction, restitution (bouncing), and non-Euclidean curved gravity fields.
+
+pub mod vehicle;
+pub use vehicle::{RaycastVehicle, WheelSuspension};
 
 use cgmath::{InnerSpace, Vector3};
 use crate::collision::{AABB, SphereCollider, Ray, RayHit};

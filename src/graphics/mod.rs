@@ -11,11 +11,13 @@ pub mod mesh;
 pub mod shader;
 pub mod texture;
 pub mod camera;
+pub mod shader_graph;
 
 pub use mesh::{Mesh, Vertex};
 pub use shader::{Shader, ShaderProgram};
 pub use texture::Texture;
 pub use camera::Camera;
+pub use shader_graph::{ShaderGraph, ShaderNode, ShaderNodeType, NodeConnection};
 
 /// Render context passed to rendering functions
 pub struct RenderContext<'a> {
