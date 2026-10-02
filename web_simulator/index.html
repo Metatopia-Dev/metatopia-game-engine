@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Metatopia — GPU to Integrated Silicon Photonics Simulator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Top Navigation & Mode Selector -->
+  <header>
+    <div class="logo-group">
+      <div class="logo-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.5">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M12 2v3m0 14v3M2 12h3m14 0h3"/>
+          <path d="M4.93 4.93l2.12 2.12m9.9 9.9l2.12 2.12M4.93 19.07l2.12-2.12m9.9-9.9l2.12-2.12"/>
+        </svg>
+      </div>
+      <div class="logo-text">
+        <h1>METATOPIA PHOTONICS</h1>
+        <span>GPU TO INTEGRATED SILICON PHOTONICS (SiPh) SIMULATOR</span>
+      </div>
+    </div>
+
+    <div class="mode-selector">
+      <button class="mode-btn" data-mode="0" id="btn-mode-gpu">
+        <span>⚡</span> 1. ELECTRONIC GPU
+      </button>
+      <button class="mode-btn active" data-mode="1" id="btn-mode-cpo">
+        <span>🌐</span> 2. CPO HYBRID (OPTICAL I/O)
+      </button>
+      <button class="mode-btn" data-mode="2" id="btn-mode-accel">
+        <span>💡</span> 3. PHOTONIC AI CORE
+      </button>
+    </div>
+
+    <div class="action-group">
+      <button class="demo-btn" id="btn-demo-tour">▶ AUTO DEMO TOUR</button>
+      <button class="step-btn" id="btn-reset" title="Reset defaults" style="width: auto; padding: 0 12px;">RESET</button>
+    </div>
+  </header>
+
+  <!-- Main 3-Column Workspace -->
+  <div class="workspace">
+    <!-- Left Parameter Controls Panel -->
+    <aside class="panel" id="controls-panel">
+      <div class="panel-title">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20v-6m0-8V2m8 8h-6m-8 0H2"/></svg>
+        Physics Parameters
+      </div>
+
+      <!-- Laser Power -->
+      <div class="control-item">
+        <div class="control-label">
+          <span>Laser Power (mW/λ)</span>
+          <span class="control-val" id="val-laser-power">20 mW</span>
+        </div>
+        <div class="slider-row">
+          <button class="step-btn" id="btn-laser-dec">-</button>
+          <input type="range" id="slider-laser-power" min="2" max="60" step="2" value="20">
+          <button class="step-btn" id="btn-laser-inc">+</button>
+        </div>
+      </div>
+
+      <!-- WDM Channels -->
+      <div class="control-item">
+        <div class="control-label">
+          <span>WDM Channels (λ)</span>
+          <span class="control-val" id="val-wdm-channels">16 λ</span>
+        </div>
+        <div class="slider-row">
+          <button class="step-btn" id="btn-wdm-dec">/2</button>
+          <input type="range" id="slider-wdm-channels" min="1" max="64" step="1" value="16">
+          <button class="step-btn" id="btn-wdm-inc">*2</button>
+        </div>
+      </div>
+
+      <!-- Baud Rate -->
+      <div class="control-item">
+        <div class="control-label">
+          <span>Modulation Baud Rate</span>
+          <span class="control-val" id="val-baud-rate">56 Gbps</span>
+        </div>
+        <div class="slider-row">
+          <button class="step-btn" id="btn-baud-dec">-</button>
+          <input type="range" id="slider-baud-rate" min="10" max="112" step="7" value="56">
+          <button class="step-btn" id="btn-baud-inc">+</button>
+        </div>
+      </div>
+
+      <!-- Die Temperature -->
+      <div class="control-item">
+        <div class="control-label">
+          <span>Die Operating Temp</span>
+          <span class="control-val" id="val-temp" style="color: var(--amber-glow)">65.0 °C</span>
+        </div>
+        <div class="slider-row">
+          <button class="step-btn" id="btn-temp-dec">-5°</button>
+          <input type="range" id="slider-temp" min="25" max="110" step="1" value="65">
+          <button class="step-btn" id="btn-temp-inc">+5°</button>
+        </div>
+      </div>
+
+      <!-- Closed-Loop Thermal Auto-Lock -->
+      <div class="control-item">
+        <div class="control-label">
+          <span>MRR Closed-Loop Tuning</span>
+          <span class="control-val" id="val-lock-state" style="color: var(--emerald-glow)">LOCKED (0.0 nm)</span>
+        </div>
+        <button class="toggle-btn on" id="btn-toggle-lock">🔒 THERMAL AUTO-LOCK: ON</button>
+      </div>
+
+      <!-- Photonic Tensor Cores -->
+      <div class="control-item">
+        <div class="control-label">
+          <span>Photonic Cores (Tiles)</span>
+          <span class="control-val" id="val-cores">8 Tiles</span>
+        </div>
+        <div class="slider-row">
+          <button class="step-btn" id="btn-cores-dec">-</button>
+          <input type="range" id="slider-cores" min="1" max="32" step="1" value="8">
+          <button class="step-btn" id="btn-cores-inc">+</button>
+        </div>
+      </div>
+
+      <!-- Workload Matrix Size N -->
+      <div class="control-item">
+        <div class="control-label">
+          <span>GEMM Matrix Dim (N x N)</span>
+          <span class="control-val" id="val-matrix-dim">2048 x 2048</span>
+        </div>
+        <div class="slider-row">
+          <button class="step-btn" id="btn-matrix-dec">/2</button>
+          <input type="range" id="slider-matrix-dim" min="512" max="8192" step="512" value="2048">
+          <button class="step-btn" id="btn-matrix-inc">*2</button>
+        </div>
+      </div>
+
+      <!-- Waveguide Loss -->
+      <div class="control-item">
+        <div class="control-label">
+          <span>Si Waveguide Loss</span>
+          <span class="control-val" id="val-wg-loss">1.50 dB/cm</span>
+        </div>
+        <div class="slider-row">
+          <button class="step-btn" id="btn-loss-dec">-</button>
+          <input type="range" id="slider-wg-loss" min="0.5" max="3.5" step="0.25" value="1.5">
+          <button class="step-btn" id="btn-loss-inc">+</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Center 3D Viewport -->
+    <main class="viewport-container" id="viewport">
+      <canvas id="render-canvas"></canvas>
+
+      <div class="viewport-overlay">
+        <div class="overlay-badge" id="badge-active-arch">ARCH: CO-PACKAGED OPTICS (CPO HYBRID)</div>
+        <div class="overlay-badge" id="badge-photons-flowing" style="border-color: var(--emerald-glow); color: var(--emerald-glow)">PHOTON STREAMS: 256 DWDM CHANNELS ACTIVE</div>
+      </div>
+
+      <div class="viewport-hints">
+        DRAG MOUSE: Orbit 360° | SCROLL: Zoom | HOTKEYS: [1,2,3] Modes, [L] Laser, [C] WDM, [T] Temp, [H] Lock
+      </div>
+    </main>
+
+    <!-- Right Real-time Telemetry & Comparison Panel -->
+    <aside class="panel panel-right" id="metrics-panel">
+      <div class="panel-title">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
+        Optical vs Electrical Telemetry
+      </div>
+
+      <!-- Bandwidth Metric Card -->
+      <div class="metric-card">
+        <div class="metric-header">
+          <span class="metric-name">Interconnect Bandwidth</span>
+          <span class="metric-val" id="val-metric-bw">14.3 Tbps</span>
+        </div>
+        <div class="bar-container" title="Optical vs Copper Bandwidth">
+          <div class="bar-fill bar-cyan" id="bar-optical-bw" style="width: 72%;"></div>
+        </div>
+        <table class="comparison-table">
+          <tr>
+            <td>Optical CPO Bandwidth</td>
+            <td id="table-opt-bw" style="color: var(--cyan-glow)">14.33 Tbps</td>
+          </tr>
+          <tr>
+            <td>Copper NVLink Bandwidth</td>
+            <td id="table-elec-bw" style="color: var(--amber-glow)">3.58 Tbps</td>
+          </tr>
+        </table>
+      </div>
+
+      <!-- Energy per Bit Metric Card -->
+      <div class="metric-card">
+        <div class="metric-header">
+          <span class="metric-name">Energy per Bit (pJ/bit)</span>
+          <span class="metric-val" id="val-metric-pj" style="color: var(--emerald-glow)">1.82 pJ/b</span>
+        </div>
+        <div class="bar-container">
+          <div class="bar-fill bar-emerald" id="bar-energy-sav" style="width: 77%;"></div>
+        </div>
+        <table class="comparison-table">
+          <tr>
+            <td>Optical Transceiver</td>
+            <td id="table-opt-pj" style="color: var(--emerald-glow)">1.82 pJ/bit</td>
+          </tr>
+          <tr>
+            <td>Copper SerDes + Retimers</td>
+            <td id="table-elec-pj" style="color: var(--ruby-glow)">14.50 pJ/bit</td>
+          </tr>
+          <tr>
+            <td>Energy Reduction</td>
+            <td id="table-energy-savings" style="color: var(--amber-glow)">77.3% SAVINGS</td>
+          </tr>
+        </table>
+      </div>
+
+      <!-- Compute Throughput & Efficiency -->
+      <div class="metric-card">
+        <div class="metric-header">
+          <span class="metric-name">Compute Performance</span>
+          <span class="metric-val" id="val-metric-tops" style="color: var(--purple-glow)">5,243 TOPS</span>
+        </div>
+        <table class="comparison-table">
+          <tr>
+            <td>Compute Acceleration</td>
+            <td id="table-speedup" style="color: var(--purple-glow)">22.2x FASTER</td>
+          </tr>
+          <tr>
+            <td>Photonic Energy Efficiency</td>
+            <td id="table-opt-eff" style="color: var(--emerald-glow)">64.7 TOPS/Watt</td>
+          </tr>
+          <tr>
+            <td>CMOS GPU Energy Efficiency</td>
+            <td id="table-elec-eff" style="color: var(--text-secondary)">0.43 TOPS/Watt</td>
+          </tr>
+        </table>
+      </div>
+
+      <!-- Optical Link Budget & Resonance -->
+      <div class="metric-card">
+        <div class="metric-header">
+          <span class="metric-name">Optical Link Budget</span>
+          <span class="metric-val" id="val-metric-ber" style="color: var(--cyan-glow)">BER &lt; 10⁻¹²</span>
+        </div>
+        <table class="comparison-table">
+          <tr>
+            <td>Total Insertion Loss</td>
+            <td id="table-loss-db">12.7 dB</td>
+          </tr>
+          <tr>
+            <td>Received Optical Power</td>
+            <td id="table-rx-power">+3.3 dBm</td>
+          </tr>
+          <tr>
+            <td>MRR Resonance Lock</td>
+            <td id="table-mrr-lock" style="color: var(--emerald-glow)">100.0% TRANSMISSION</td>
+          </tr>
+          <tr>
+            <td>Heater Tuning Power</td>
+            <td id="table-heater-power">1.02 W</td>
+          </tr>
+        </table>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Bottom Console Telemetry Bar -->
+  <footer>
+    <div class="log-stream">
+      <span style="color: var(--cyan-glow); font-weight: bold;">[TELEMETRY LOG]:</span>
+      <span id="log-text">System ready. Silicon Photonics Interconnect operational at 14.3 Tbps.</span>
+    </div>
+    <div class="fps-counter" id="fps-display">60 FPS | METATOPIA ENGINE</div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

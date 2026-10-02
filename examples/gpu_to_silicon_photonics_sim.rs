@@ -37,18 +37,29 @@ pub struct GpuPhotonicsSimApp {
     pub pulse_timer: f32,
     pub status_message: String,
     pub status_timer: f32,
+    pub auto_demo: bool,
+    pub demo_timer: f32,
+    pub demo_stage: usize,
 }
 
 impl GpuPhotonicsSimApp {
     pub fn new() -> Self {
         let sim = PhotonicsSimulator::new(PhotonicsConfig::default());
+        let auto_demo = std::env::args().any(|a| a == "--demo");
         Self {
             sim,
             particle_system: ParticleSystem::new(2000),
             camera_initialized: false,
             pulse_timer: 0.0,
-            status_message: "GPU to Silicon Photonics Simulator Ready. Press [1], [2], [3] to switch modes.".into(),
+            status_message: if auto_demo {
+                "AUTO DEMO TOUR ACTIVE: Recording Silicon Photonics Showcase...".into()
+            } else {
+                "GPU to Silicon Photonics Simulator Ready. Press [1], [2], [3] or [TAB] for Auto Demo.".into()
+            },
             status_timer: 6.0,
+            auto_demo,
+            demo_timer: 0.0,
+            demo_stage: 0,
         }
     }
 
@@ -206,20 +217,72 @@ impl GameApp for GpuPhotonicsSimApp {
             self.status_timer -= ctx.dt;
         }
 
-        // 2. Camera Navigation
-        if ctx.mouse_held(winit::event::MouseButton::Right) {
-            ctx.default_camera_movement();
+        // 2. Camera Navigation & Auto-Demo Tour
+        if self.auto_demo {
+            self.demo_timer += ctx.dt;
+            let orbit_angle = self.demo_timer * 0.30 - 1.57;
+            let rad = 15.0;
+            ctx.camera.position = Vector3::new(
+                orbit_angle.cos() * rad,
+                9.5 + (self.demo_timer * 0.4).sin() * 1.5,
+                orbit_angle.sin() * rad,
+            );
+            ctx.camera.yaw = orbit_angle + std::f32::consts::PI;
+            ctx.camera.pitch = -0.52 + (self.demo_timer * 0.5).sin() * 0.08;
+
+            // Demo stage progression
+            if self.demo_stage == 0 && self.demo_timer > 3.0 {
+                self.demo_stage = 1;
+                self.sim.set_mode(ArchitectureMode::CpoHybrid);
+                self.set_status("TOUR [1/5]: Co-Packaged Optics Active — 14.3 Tbps via Silicon Waveguides (1.8 pJ/b)!");
+            } else if self.demo_stage == 1 && self.demo_timer > 6.5 {
+                self.demo_stage = 2;
+                self.sim.config.wdm_channels = 32;
+                self.sim.recalculate();
+                self.set_status("TOUR [2/5]: Dense WDM Scaled to 32 Wavelengths — 28.6 Tbps Ultra-Bandwidth!");
+            } else if self.demo_stage == 2 && self.demo_timer > 10.0 {
+                self.demo_stage = 3;
+                self.sim.config.auto_thermal_lock = false;
+                self.sim.config.die_temperature_c = 85.0;
+                self.sim.recalculate();
+                self.set_status("TOUR [3/5]: Thermal Drift to 85°C (Auto-Lock OFF) — Resonance Drops to 4%, Red Photon Loss!");
+            } else if self.demo_stage == 3 && self.demo_timer > 14.0 {
+                self.demo_stage = 4;
+                self.sim.config.auto_thermal_lock = true;
+                self.sim.recalculate();
+                self.set_status("TOUR [4/5]: Closed-Loop Thermal Lock Re-engaged — Microheaters Restore 100% Resonance!");
+            } else if self.demo_stage == 4 && self.demo_timer > 17.5 {
+                self.demo_stage = 5;
+                self.sim.set_mode(ArchitectureMode::PhotonicAccelerator);
+                self.set_status("TOUR [5/5]: Integrated Photonic AI Core — 5,243 TOPS @ 64.7 TOPS/Watt at Speed of Light!");
+            }
         } else {
-            // WASD translation only
-            let speed = ctx.camera.move_speed * ctx.dt;
-            let fwd = ctx.camera.forward();
-            let right = ctx.camera.right();
-            let flat_fwd = Vector3::new(fwd.x, 0.0, fwd.z).normalize() * speed;
-            let flat_right = right * speed;
-            if ctx.key_held(VirtualKey::KeyW) { ctx.camera.position += flat_fwd; }
-            if ctx.key_held(VirtualKey::KeyS) { ctx.camera.position -= flat_fwd; }
-            if ctx.key_held(VirtualKey::KeyA) { ctx.camera.position -= flat_right; }
-            if ctx.key_held(VirtualKey::KeyD) { ctx.camera.position += flat_right; }
+            if ctx.mouse_held(winit::event::MouseButton::Right) {
+                ctx.default_camera_movement();
+            } else {
+                let speed = ctx.camera.move_speed * ctx.dt;
+                let fwd = ctx.camera.forward();
+                let right = ctx.camera.right();
+                let flat_fwd = Vector3::new(fwd.x, 0.0, fwd.z).normalize() * speed;
+                let flat_right = right * speed;
+                if ctx.key_held(VirtualKey::KeyW) { ctx.camera.position += flat_fwd; }
+                if ctx.key_held(VirtualKey::KeyS) { ctx.camera.position -= flat_fwd; }
+                if ctx.key_held(VirtualKey::KeyA) { ctx.camera.position -= flat_right; }
+                if ctx.key_held(VirtualKey::KeyD) { ctx.camera.position += flat_right; }
+            }
+        }
+
+        // Toggle Auto-Demo: Tab key
+        if ctx.key_pressed(VirtualKey::Tab) {
+            self.auto_demo = !self.auto_demo;
+            if self.auto_demo {
+                self.demo_timer = 0.0;
+                self.demo_stage = 0;
+                self.sim.set_mode(ArchitectureMode::ElectronicGpu);
+                self.set_status("AUTO DEMO TOUR ACTIVATED (Cinematic camera & live feature showcase)");
+            } else {
+                self.set_status("AUTO DEMO TOUR PAUSED (Free camera control restored)");
+            }
         }
 
         // 3. Keyboard Shortcuts
