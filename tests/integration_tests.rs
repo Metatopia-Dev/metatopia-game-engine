@@ -490,3 +490,69 @@ mod position_tests {
         assert!(world_pos.is_some(), "to_world should succeed for default chart");
     }
 }
+
+// ─── Silicon Photonics & GPU Optical Interconnect ─────────────────────────
+
+mod photonics_tests {
+    use super::*;
+
+    #[test]
+    fn test_mode_transitions_and_bandwidth_scaling() {
+        let mut sim = PhotonicsSimulator::new(PhotonicsConfig::default());
+
+        // Mode 1: Electronic GPU
+        sim.set_mode(ArchitectureMode::ElectronicGpu);
+        assert_eq!(sim.config.mode, ArchitectureMode::ElectronicGpu);
+        let elec_bw = sim.metrics.active_bandwidth_tbps;
+        assert!(elec_bw > 1.0 && elec_bw < 10.0);
+
+        // Mode 2: CPO Hybrid
+        sim.set_mode(ArchitectureMode::CpoHybrid);
+        assert_eq!(sim.config.mode, ArchitectureMode::CpoHybrid);
+        let cpo_bw = sim.metrics.active_bandwidth_tbps;
+        assert!(cpo_bw > elec_bw, "Optical CPO bandwidth must exceed electrical SerDes");
+
+        // Scale WDM channels
+        sim.adjust_wdm_channels(true); // 32 channels
+        assert_eq!(sim.config.wdm_channels, 32);
+        assert!(sim.metrics.active_bandwidth_tbps > cpo_bw);
+
+        // Mode 3: Photonic Accelerator
+        sim.set_mode(ArchitectureMode::PhotonicAccelerator);
+        assert_eq!(sim.config.mode, ArchitectureMode::PhotonicAccelerator);
+        assert!(sim.metrics.active_compute_tops > sim.metrics.electronic_compute_tops);
+    }
+
+    #[test]
+    fn test_thermal_tuning_closed_loop_recovery() {
+        let mut config = PhotonicsConfig::default();
+        config.die_temperature_c = 85.0; // Hot die
+        config.auto_thermal_lock = true;
+
+        let mut sim = PhotonicsSimulator::new(config);
+        assert_eq!(sim.metrics.resonance_transmission_factor, 1.0);
+        assert!(sim.metrics.thermal_tuning_power_watts > 0.0);
+
+        // Disable lock -> severe drop in transmission
+        sim.toggle_thermal_lock();
+        assert!(!sim.config.auto_thermal_lock);
+        assert!(sim.metrics.resonance_transmission_factor < 0.1);
+
+        // Re-enable lock -> instant recovery
+        sim.toggle_thermal_lock();
+        assert!(sim.config.auto_thermal_lock);
+        assert_eq!(sim.metrics.resonance_transmission_factor, 1.0);
+    }
+
+    #[test]
+    fn test_optical_link_budget_attenuation() {
+        let mut sim = PhotonicsSimulator::new(PhotonicsConfig::default());
+        sim.adjust_laser_power(20.0); // 40 mW
+        assert!(sim.metrics.received_power_dbm > -12.0);
+        assert!(sim.metrics.optical_ber < 1e-4);
+
+        // Increase waveguide loss
+        sim.adjust_waveguide_loss(2.0);
+        assert!(sim.metrics.optical_insertion_loss_db > 10.0);
+    }
+}

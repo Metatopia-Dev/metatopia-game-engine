@@ -32,9 +32,11 @@ pub mod assets;
 pub mod atmosphere;
 pub mod terrain;
 pub mod wasm;
+pub mod photonics;
 
 // Re-export commonly used types
 pub use core::{Engine, EngineConfig, GameState};
+pub use photonics::{PhotonicsSimulator, PhotonicsConfig, ArchitectureMode, SimMetrics};
 pub use ecs::{World, Entity, Component, Velocity, Renderable, Transform as EcsTransform, TransformSystem, PortalTransitionSystem};
 pub use graphics::{Renderer, RenderContext, Color, Mesh, Vertex, Camera, camera::FPSCameraController, ShaderGraph, ShaderNode, ShaderNodeType, NodeConnection};
 pub use input::{InputManager, InputEvent, KeyCode, MouseButton, GamepadButton, GamepadAxis};
@@ -96,6 +98,7 @@ pub mod prelude {
     pub use crate::atmosphere::{TimeOfDay, VolumetricFog, AtmosphereController};
     pub use crate::terrain::{VoxelType, VoxelChunk};
     pub use crate::wasm::{WasmConfig, WebXrSession, WasmExportRunner};
+    pub use crate::photonics::{PhotonicsSimulator, PhotonicsConfig, ArchitectureMode, SimMetrics};
     pub use cgmath::{Point3, Vector3, Quaternion};
 }
 pub use manifold::{
