@@ -181,21 +181,55 @@ cargo run --release --example metatopia_sandbox
 
 ---
 
-### 6. Basic Graphics (`basic_graphics`)
+### 9. Non-Euclidean Ray-Marched Portal & Hyperbolic $\mathbb{H}^3$ Benchmark (`hyperbolic_portal_benchmark`)
+Real-time WGSL ray-marched Riemannian manifold and multi-bounce portal benchmark featuring continuous curvature $K \in [-1.35, +1.35]$, Poincaré ball gyrometric transport, and a built-in 9-movement 128 BPM procedural stereo techno synthesizer (*"GEODESIC HORIZON"*).
+
+- **4 Non-Euclidean Scenes**:
+  1. **Impossible Non-Euclidean Corridor & 4-Chart Loop**: Seamless multi-chart portal loop (`Chart 0 -> 1 -> 2 -> 3 -> 0`) with local tangent-space Möbius transport
+  2. **Hyperbolic $\mathbb{H}^3$ `{4,3,5}` Conformal Honeycomb Cathedral**: $C^1$-continuous hyperbolic space folding with conformal metric scaling $\lambda(x) = \frac{2}{1 + K\|x\|^2}$
+  3. **Multi-Chart Curvature Bridge ($\mathbb{E}^3 \to \mathbb{H}^3 \to \mathbb{S}^3$)**: Continuous transition from flat Euclidean space to negatively curved hyperbolic space and positively curved spherical $\mathbb{S}^3$ star-vaults
+  4. **16-Bounce Recursive Infinity Portal Tunnel**: High-depth recursive portal mirror stress test with exponential LOD border attenuation and full-3D neon spectrum overdrive
+- **3 Execution Modes**: Interactive 60 FPS WGPU Explorer, Headless CPU+GPU Benchmark Suite (`--bench`), and 3-Minute 128 BPM Audiovisual Videoclip Recorder (`--record <output.mp4>`)
+
+```bash
+# Interactive 60 FPS Explorer
+cargo run --release --example hyperbolic_portal_benchmark
+
+# Headless CPU + GPU Geodesic & Multi-Bounce Benchmark Suite
+cargo run --release --example hyperbolic_portal_benchmark -- --bench
+
+# Record Full 3:00 (96-Bar @ 128 BPM) Techno Videoclip (Original Master + <20 MB Compressed)
+cargo run --release --example hyperbolic_portal_benchmark -- --record hyperbolic_portal_gameplay.mp4
+```
+
+**Controls**: WASD + Mouse Fly · 1–4 Switch Scene · Q/E Adjust Curvature $K$ · [ / ] Portal Bounce Depth (0–16) · H Cycle PBR / Step-Cost Heatmap / Full-3D Neon Overdrive · Space Toggle Auto-Tour
+
+---
+
+### 10. GPU-to-Silicon Photonics Optical Interconnect Simulator (`photonics_sim`)
+Interactive 3D simulator for WDM microring resonators, Mach-Zehnder interferometers (MZI), waveguide propagation loss, thermal tuning, and eye-diagram BER analysis.
+
+```bash
+cargo run --release --example photonics_sim
+```
+
+---
+
+### 11. Basic Graphics (`basic_graphics`)
 Minimal WGPU rendering setup demonstrating the engine's shader pipeline.
 
 ```bash
 cargo run --release --example basic_graphics
 ```
 
-### 7. Simple Demo (`simple_demo`)
+### 12. Simple Demo (`simple_demo`)
 Console-based demonstration of the manifold, ECS, and portal systems without GPU rendering.
 
 ```bash
 cargo run --release --example simple_demo
 ```
 
-### 8. My First Game — Quickstart Template (`my_first_game`)
+### 13. My First Game — Quickstart Template (`my_first_game`)
 Minimal ~130-line game demonstrating the zero-boilerplate `quickstart` module. Walk over colored cubes to collect them.
 
 ```bash
@@ -217,11 +251,13 @@ src/
 ├── audio.rs            # Audio engine (SFX, music, preloading)
 ├── scoring/mod.rs      # ScoreTracker, combos, HudData
 ├── manifold/
-│   ├── mod.rs          # Manifold container
+│   ├── mod.rs          # Manifold container & multi-chart topology
 │   ├── chart.rs        # Chart, ChartId, GeometryType
-│   ├── portal.rs       # Portal connections + ray intersection
-│   ├── metric.rs       # Metric tensor definitions
-│   └── geodesic.rs     # Shortest-path computation
+│   ├── portal.rs       # Portal connections, tangent-space transport & traversal
+│   ├── metric.rs       # Riemannian metric tensor, Poincaré ball, Möbius addition, Christoffel symbols
+│   ├── geodesic.rs     # Shortest-path & RK4 geodesic integration
+│   └── raycast.rs      # Non-Euclidean geodesic ray-marching & multi-bounce portal benchmark
+├── photonics/          # Silicon photonics WDM, microring, MZI & link budget engine
 ├── graphics/
 │   ├── mod.rs          # Renderer
 │   ├── camera.rs       # Non-Euclidean camera
@@ -236,6 +272,7 @@ src/
 └── window/mod.rs       # Window creation, event loop
 
 shaders/
+├── hyperbolic_portal_benchmark.wgsl # 16-bounce Non-Euclidean portal & H3 {4,3,5} honeycomb ray marcher
 ├── template_game.wgsl  # Starter shader for quickstart games
 ├── non_euclidean.wgsl  # PBR + portal rooms + orbs + noise
 ├── pest_control.wgsl   # FPS environment + PBR + film grain
@@ -244,6 +281,12 @@ shaders/
 └── basic.wgsl          # Minimal vertex/fragment shader
 
 examples/
+├── hyperbolic_portal_benchmark.rs # Non-Euclidean ray-marched portal benchmark & 128 BPM audiovisual synth
+├── photonics_sim.rs    # 3D GPU-to-silicon photonics optical interconnect simulator
+├── metatopia_sandbox.rs # 7 next-gen engine subsystems showcase
+├── metatopia_editor.rs # 3D studio editor with live Rhai scripting
+├── cyber_arena_fps.rs  # Cyberpunk 3D arena FPS
+├── metatopia_vr_quest.rs # Stereoscopic 3D VR experience for Meta Quest 3S
 ├── my_first_game.rs    # Quickstart template (~130 lines)
 ├── basic_game.rs       # Non-Euclidean physics sandbox
 ├── pest_control_sim.rs # FPS pest control game
