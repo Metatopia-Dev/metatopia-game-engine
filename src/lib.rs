@@ -79,9 +79,9 @@ pub mod prelude {
     pub use crate::scoring::{ScoreTracker, ScoreEvent, HudData};
     pub use crate::collision::{AABB, SphereCollider, Ray, RayHit, Collider, CollisionWorld};
     pub use crate::audio::{AudioEngine, AudioListener, SpatialSoundSource, AttenuationModel, SpatialAudioEngine};
-    pub use crate::manifold::{Manifold, Chart, ChartId, Portal, PortalId,
-                              GeometryType, MetricTensor, Geodesic, ManifoldPosition,
-                              ManifoldRay, ManifoldRayHit, ManifoldRayTrace, ManifoldRaycaster};
+    pub use crate::manifold::{Manifold, Chart, ChartId, Portal, PortalId, PortalShape,
+                              GeometryType, MetricTensor, ChristoffelSymbols, Geodesic, ManifoldPosition,
+                              ManifoldRay, ManifoldRayHit, ManifoldRayTrace, ManifoldRaycaster, PortalBenchmarkMetrics};
     pub use crate::particles::{Particle, ParticleEmitter, EmitterShape, ParticleSystem};
     pub use crate::physics::{RigidBody, BodyType, PhysicsCollider, GravityField, PhysicsWorld, RaycastVehicle, WheelSuspension};
     pub use crate::geometry::ProceduralMesh;
@@ -90,7 +90,7 @@ pub mod prelude {
     pub use crate::ai::{BehaviorNode, SequenceNode, SelectorNode, InverterNode, ActionNode, ConditionNode, NodeStatus, Blackboard, BlackboardValue, NavGraph, NavNode};
     pub use crate::lighting::{LightManager, PointLight, SpotLight, DirectionalLight, GpuLight};
     pub use crate::ui::{UiCanvas, Rect, Anchor, DamagePopup, UiQuad};
-    pub use crate::decals::{Decal, DecalSystem, DecalType};
+    pub use crate::decals::{Decal, DecalType, DecalSystem};
     pub use crate::net::{NetServer, NetClient, ClientMessage, ServerMessage, EntityState, ChannelType, Snapshot, SnapshotBuffer, ClientPrediction};
     pub use crate::scripting::{ScriptEngine, ScriptEntityState};
     pub use crate::vr::{StereoCameraRig, StereoMode, Eye, VrHeadPose, VrController, VrHand, VrTrackingContext};
@@ -104,10 +104,10 @@ pub mod prelude {
 pub use manifold::{
     Manifold, ManifoldPosition, ManifoldOrientation,
     Chart, ChartId, LocalCoordinate,
-    Portal, PortalId,
+    Portal, PortalId, PortalShape, PortalBounds,
     Geodesic, GeodesicPath,
-    Metric, MetricTensor, GeometryType,
-    ManifoldRay, ManifoldRayHit, ManifoldRayTrace, ManifoldRaycaster,
+    Metric, MetricTensor, GeometryType, ChristoffelSymbols,
+    ManifoldRay, ManifoldRayHit, ManifoldRayTrace, ManifoldRaycaster, PortalBenchmarkMetrics,
 };
 pub use manifold::geodesic::GeodesicRay;
 

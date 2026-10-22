@@ -11,10 +11,10 @@ pub mod metric;
 pub mod raycast;
 
 pub use chart::{Chart, ChartId, LocalCoordinate};
-pub use portal::{Portal, PortalId, PortalConnection};
+pub use portal::{Portal, PortalId, PortalConnection, PortalShape, PortalBounds};
 pub use geodesic::{Geodesic, GeodesicPath};
-pub use metric::{Metric, MetricTensor, GeometryType};
-pub use raycast::{ManifoldRay, RaySegment, ManifoldRayHit, ManifoldRayTrace, ManifoldRaycaster};
+pub use metric::{Metric, MetricTensor, GeometryType, ChristoffelSymbols};
+pub use raycast::{ManifoldRay, RaySegment, ManifoldRayHit, ManifoldRayTrace, ManifoldRaycaster, PortalBenchmarkMetrics};
 
 /// A manifold representing the entire non-Euclidean world
 #[derive(Clone)]
@@ -82,6 +82,65 @@ impl Manifold {
         self.connections.push(connection);
         
         Ok(id)
+    }
+
+    /// Create a portal connection between two charts with custom aperture bounds
+    pub fn create_portal_with_bounds(
+        &mut self,
+        from_chart: ChartId,
+        to_chart: ChartId,
+        from_position: Point3<f32>,
+        to_position: Point3<f32>,
+        transform: Matrix4<f32>,
+        normal: Vector3<f32>,
+        width: f32,
+        height: f32,
+        shape: portal::PortalShape,
+    ) -> Result<PortalId, String> {
+        let _from = self.charts.get(&from_chart)
+            .ok_or_else(|| format!("Chart {:?} not found", from_chart))?;
+        let _to = self.charts.get(&to_chart)
+            .ok_or_else(|| format!("Chart {:?} not found", to_chart))?;
+
+        let id = PortalId(self.portals.len() as u32);
+        let portal = Portal::new(
+            id,
+            from_chart,
+            to_chart,
+            from_position,
+            to_position,
+            transform,
+        )
+        .with_bounds(normal, width, height, shape);
+
+        let connection = PortalConnection {
+            portal_id: id,
+            from_chart,
+            to_chart,
+        };
+
+        self.portals.insert(id, portal);
+        self.connections.push(connection);
+
+        Ok(id)
+    }
+
+    /// Check if moving from `prev_pos` to `curr_pos` in `chart_id` crosses any active portal
+    pub fn check_portal_crossing(
+        &self,
+        chart_id: ChartId,
+        prev_pos: Point3<f32>,
+        curr_pos: Point3<f32>,
+        forward_dir: Vector3<f32>,
+    ) -> Option<(Point3<f32>, Vector3<f32>, ChartId, PortalId)> {
+        for portal in self.portals_from_chart(chart_id) {
+            if let Some((new_pos, new_dir, target_chart)) =
+                portal.check_crossing(prev_pos, curr_pos, forward_dir)
+            {
+                return Some((new_pos, new_dir, target_chart, portal.id()));
+            }
+        }
+        None
     }
     
     /// Transform a point from one chart to another through portals

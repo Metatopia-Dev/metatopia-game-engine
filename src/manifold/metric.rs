@@ -60,10 +60,27 @@ impl MetricTensor {
         }
     }
     
+    /// Create 3D conformal metric (Poincaré ball for k < 0, stereographic sphere for k > 0)
+    pub fn conformal_3d(p: Point3<f32>, curvature: f32) -> Self {
+        let r2 = p.x * p.x + p.y * p.y + p.z * p.z;
+        let denom = if curvature < 0.0 {
+            (1.0 + curvature * 0.25 * r2).max(0.02)
+        } else {
+            (1.0 + curvature * 0.25 * r2).max(0.02)
+        };
+        let lambda = 2.0 / denom;
+        let lambda2 = lambda * lambda;
+
+        Self {
+            g: Matrix3::from_diagonal(Vector3::new(lambda2, lambda2, lambda2)),
+            curvature,
+        }
+    }
+
     /// Compute the norm of a vector using this metric
     pub fn norm(&self, v: Vector3<f32>) -> f32 {
         let gv = self.g * v;
-        v.dot(gv).sqrt()
+        v.dot(gv).max(0.0).sqrt()
     }
     
     /// Compute inner product of two vectors
@@ -74,8 +91,12 @@ impl MetricTensor {
     
     /// Get Christoffel symbols for parallel transport
     pub fn christoffel_symbols(&self) -> ChristoffelSymbols {
-        // Simplified computation for common geometries
         ChristoffelSymbols::from_metric(self)
+    }
+
+    /// Get analytical position-dependent Christoffel symbols at `point`
+    pub fn christoffel_symbols_at(&self, point: Point3<f32>) -> ChristoffelSymbols {
+        ChristoffelSymbols::from_conformal_point(point, self.curvature)
     }
 }
 
@@ -86,19 +107,60 @@ pub struct ChristoffelSymbols {
 
 impl ChristoffelSymbols {
     pub fn from_metric(metric: &MetricTensor) -> Self {
-        // Simplified - full computation would involve metric derivatives
-        let gamma = [[[0.0; 3]; 3]; 3];
-        
-        // For hyperbolic geometry in Poincaré disk
-        if metric.curvature < 0.0 {
-            // Non-zero Christoffel symbols for Poincaré metric
-            // These would be computed from metric derivatives
+        // Default origin / reference point evaluation when point is not supplied
+        Self::from_conformal_point(Point3::new(0.25, 0.25, 0.0), metric.curvature)
+    }
+
+    /// Exact analytical Christoffel symbols for 3D conformally flat space
+    /// ds² = λ(x)² (dx² + dy² + dz²), where λ(x) = 2 / (1 + K ||x||²)
+    /// Γⁱⱼₗ = ∂ₗ(ln λ) δⁱⱼ + ∂ⱼ(ln λ) δⁱₗ - ∂ᵢ(ln λ) δⱼₗ
+    pub fn from_conformal_point(point: Point3<f32>, curvature: f32) -> Self {
+        let mut gamma = [[[0.0; 3]; 3]; 3];
+        if curvature.abs() < 1e-6 {
+            return Self { gamma };
         }
-        
+
+        let mut coords = [point.x, point.y, point.z];
+        let raw_r2 = coords[0] * coords[0] + coords[1] * coords[1] + coords[2] * coords[2];
+        // Project radially inside the conformal horizon (1 + K r² >= 0.04) so d_sigma remains a true gradient
+        let k = curvature;
+        let r2 = if k < 0.0 {
+            let max_r2 = 0.96 / (-k);
+            if raw_r2 > max_r2 {
+                let scale = (max_r2 / raw_r2).sqrt();
+                coords[0] *= scale;
+                coords[1] *= scale;
+                coords[2] *= scale;
+                max_r2
+            } else {
+                raw_r2
+            }
+        } else {
+            raw_r2
+        };
+        let denom = (1.0 + k * r2).max(0.04);
+        let factor = (-2.0 * k) / denom;
+        let d_sigma = [
+            factor * coords[0],
+            factor * coords[1],
+            factor * coords[2],
+        ];
+
+        for i in 0..3 {
+            for j in 0..3 {
+                for l in 0..3 {
+                    let delta_ij = if i == j { 1.0 } else { 0.0 };
+                    let delta_il = if i == l { 1.0 } else { 0.0 };
+                    let delta_jl = if j == l { 1.0 } else { 0.0 };
+                    gamma[i][j][l] = delta_ij * d_sigma[l] + delta_il * d_sigma[j] - delta_jl * d_sigma[i];
+                }
+            }
+        }
+
         Self { gamma }
     }
     
-    /// Apply Christoffel symbols to compute geodesic acceleration
+    /// Apply Christoffel symbols to compute geodesic acceleration: aⁱ = -Γⁱⱼₖ vʲ vᵏ
     pub fn geodesic_acceleration(&self, _position: Vector3<f32>, velocity: Vector3<f32>) -> Vector3<f32> {
         let mut accel = Vector3::new(0.0, 0.0, 0.0);
         
@@ -111,6 +173,18 @@ impl ChristoffelSymbols {
         }
         
         accel
+    }
+    /// Compute parallel transport differential: dVⁱ = -Γⁱⱼₖ Vʲ dxᵏ
+    pub fn parallel_transport_delta(&self, vector: Vector3<f32>, dx: Vector3<f32>) -> Vector3<f32> {
+        let mut dv = Vector3::new(0.0, 0.0, 0.0);
+        for i in 0..3 {
+            for j in 0..3 {
+                for k in 0..3 {
+                    dv[i] -= self.gamma[i][j][k] * vector[j] * dx[k];
+                }
+            }
+        }
+        dv
     }
 }
 
@@ -168,9 +242,9 @@ impl Metric {
         match self.geometry {
             GeometryType::Euclidean => MetricTensor::identity(),
             GeometryType::Spherical => {
-                // Convert to spherical coordinates
-                let r = (point.x * point.x + point.y * point.y + point.z * point.z).sqrt();
-                let theta = (point.z / r).acos();
+                // Convert to spherical coordinates (safe against r = 0)
+                let r = (point.x * point.x + point.y * point.y + point.z * point.z).sqrt().max(1e-5);
+                let theta = (point.z / r).clamp(-1.0, 1.0).acos();
                 let phi = point.y.atan2(point.x);
                 MetricTensor::spherical(self.parameters.radius, theta, phi)
             }
@@ -202,19 +276,7 @@ impl Metric {
                 r * cos_angle.acos()
             }
             GeometryType::Hyperbolic => {
-                // Poincaré disk distance
-                let a_r = (a.x * a.x + a.y * a.y).sqrt();
-                let b_r = (b.x * b.x + b.y * b.y).sqrt();
-                
-                if a_r >= 0.99 || b_r >= 0.99 {
-                    return f32::INFINITY;
-                }
-                
-                let delta = ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt();
-                let numerator = 2.0 * delta;
-                let denominator = (1.0 - a_r * a_r) * (1.0 - b_r * b_r);
-                
-                (1.0 + numerator / denominator.sqrt()).ln()
+                Self::poincare_distance_3d(a, b)
             }
             GeometryType::Custom => {
                 // Fallback to Euclidean
@@ -222,30 +284,63 @@ impl Metric {
             }
         }
     }
+
+    /// Exact 3D Poincaré ball geodesic distance:
+    /// d(a, b) = arcosh(1 + 2 ||a - b||² / ((1 - ||a||²)(1 - ||b||²)))
+    pub fn poincare_distance_3d(a: Point3<f32>, b: Point3<f32>) -> f32 {
+        let a_r2 = a.x * a.x + a.y * a.y + a.z * a.z;
+        let b_r2 = b.x * b.x + b.y * b.y + b.z * b.z;
+        if a_r2 >= 0.999 || b_r2 >= 0.999 {
+            return f32::INFINITY;
+        }
+        let diff = b - a;
+        let delta2 = diff.x * diff.x + diff.y * diff.y + diff.z * diff.z;
+        let arg = 1.0 + (2.0 * delta2) / ((1.0 - a_r2) * (1.0 - b_r2)).max(1e-6);
+        arg.max(1.0).acosh()
+    }
+
+    /// Möbius gyrovector addition u ⊕_K v in the 3D Poincaré ball / stereographic sphere
+    /// For Hyperbolic space use curvature_k < 0 (e.g. -1.0); for Euclidean 0.0; for Spherical > 0.
+    pub fn mobius_add(u: Vector3<f32>, v: Vector3<f32>, curvature_k: f32) -> Vector3<f32> {
+        if curvature_k.abs() < 1e-6 {
+            return u + v;
+        }
+        let k = -curvature_k; // c = -K in Ungar's convention (+1 for unit Poincaré ball when K = -1)
+        let u2 = u.dot(u);
+        let v2 = v.dot(v);
+        let uv = u.dot(v);
+        let denom = (1.0 + 2.0 * k * uv + k * k * u2 * v2).max(1e-6);
+        let coef_u = 1.0 + 2.0 * k * uv + k * v2;
+        let coef_v = 1.0 - k * u2;
+        (u * coef_u + v * coef_v) / denom
+    }
     
-    /// Parallel transport a vector along a path
+    /// Parallel transport a vector along a path using analytical Christoffel symbols
     pub fn parallel_transport(&self, vector: Vector3<f32>, path: &GeodesicPath) -> Vector3<f32> {
+        let orig_mag = vector.magnitude();
+        if orig_mag < 1e-6 {
+            return vector;
+        }
         let mut transported = vector;
         
-        // Integrate parallel transport equation along the path
+        // Integrate parallel transport equation dVⁱ = -Γⁱⱼₖ(x) Vʲ dxᵏ along the path
         for i in 1..path.points.len() {
             let p0 = path.points[i - 1];
             let p1 = path.points[i];
-            let tangent = (p1 - p0).normalize();
+            let dx = p1 - p0;
             
             let metric = self.tensor_at(p0);
-            let symbols = metric.christoffel_symbols();
-            
-            // Update vector using parallel transport equation
-            let correction = symbols.geodesic_acceleration(
-                Vector3::new(p0.x, p0.y, p0.z),
-                tangent,
-            );
-            
-            transported = transported - correction * 0.01; // Small step
+            let symbols = metric.christoffel_symbols_at(p0);
+            let dv = symbols.parallel_transport_delta(transported, dx);
+            transported = transported + dv;
         }
         
-        transported.normalize() * vector.magnitude()
+        let new_mag = transported.magnitude();
+        if new_mag > 1e-6 {
+            (transported / new_mag) * orig_mag
+        } else {
+            vector
+        }
     }
     
     /// Compute transport matrix for orientation
@@ -265,5 +360,42 @@ impl Metric {
             tz.extend(0.0),
             Vector3::new(0.0, 0.0, 0.0).extend(1.0),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_christoffel_symbols_poincare_nonzero() {
+        let p = Point3::new(0.3, 0.4, 0.0);
+        let cs = ChristoffelSymbols::from_conformal_point(p, -1.0);
+        // At (0.3, 0.4, 0.0), r² = 0.25, 1 - r² = 0.75, factor = 2 / 0.75 = 2.6667
+        // Γ⁰₀₀ = d_sigma[0] = 2 * 0.3 / 0.75 = 0.8
+        assert!((cs.gamma[0][0][0] - 0.8).abs() < 1e-4);
+        // Γ⁰₁₁ = -d_sigma[0] = -0.8
+        assert!((cs.gamma[0][1][1] + 0.8).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_mobius_addition_identity_and_inverse() {
+        let u = Vector3::new(0.25, -0.15, 0.1);
+        let zero = Vector3::new(0.0, 0.0, 0.0);
+        let added_zero = Metric::mobius_add(u, zero, -1.0);
+        assert!((added_zero - u).magnitude() < 1e-6);
+
+        let inv = Metric::mobius_add(u, -u, -1.0);
+        assert!(inv.magnitude() < 1e-6);
+    }
+
+    #[test]
+    fn test_poincare_3d_distance_symmetry() {
+        let a = Point3::new(0.1, 0.2, -0.1);
+        let b = Point3::new(-0.3, 0.1, 0.2);
+        let d_ab = Metric::poincare_distance_3d(a, b);
+        let d_ba = Metric::poincare_distance_3d(b, a);
+        assert!((d_ab - d_ba).abs() < 1e-5);
+        assert!(d_ab > 0.0);
     }
 }

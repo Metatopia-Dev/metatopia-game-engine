@@ -77,6 +77,41 @@ impl Portal {
         }
     }
     
+    /// Configure custom portal bounds (normal, width, height, shape)
+    pub fn with_bounds(
+        mut self,
+        normal: Vector3<f32>,
+        width: f32,
+        height: f32,
+        shape: PortalShape,
+    ) -> Self {
+        self.bounds.normal = normal.normalize();
+        self.bounds.width = width;
+        self.bounds.height = height;
+        self.bounds.shape = shape;
+        self
+    }
+
+    /// Get portal bounds
+    pub fn bounds(&self) -> &PortalBounds {
+        &self.bounds
+    }
+
+    /// Get portal entry center position in source chart
+    pub fn from_position(&self) -> Point3<f32> {
+        self.from_position
+    }
+
+    /// Get portal exit center position in target chart
+    pub fn to_position(&self) -> Point3<f32> {
+        self.to_position
+    }
+
+    /// Get portal transformation matrix
+    pub fn transform_matrix(&self) -> Matrix4<f32> {
+        self.transform
+    }
+
     /// Get portal ID
     pub fn id(&self) -> PortalId {
         self.id
@@ -92,23 +127,43 @@ impl Portal {
         self.to_chart
     }
     
-    /// Transform a point through the portal
+    /// Transform a point through the portal (pivoting around `from_position` to `to_position`)
     pub fn transform_point(&self, point: Point3<f32>) -> Point3<f32> {
-        // Apply portal transformation matrix
-        let transformed = self.transform.transform_point(point);
-        
-        // Translate to target position
-        let offset = self.to_position - self.from_position;
-        Point3::new(
-            transformed.x + offset.x,
-            transformed.y + offset.y,
-            transformed.z + offset.z,
-        )
+        let local_offset = point - self.from_position;
+        let transformed_offset = self.transform.transform_vector(local_offset);
+        self.to_position + transformed_offset
     }
     
     /// Transform a vector (direction) through the portal
     pub fn transform_vector(&self, vector: Vector3<f32>) -> Vector3<f32> {
         self.transform.transform_vector(vector)
+    }
+
+    /// Check if a moving point segment `prev_pos -> curr_pos` crosses the active portal aperture
+    pub fn check_crossing(
+        &self,
+        prev_pos: Point3<f32>,
+        curr_pos: Point3<f32>,
+        forward_dir: Vector3<f32>,
+    ) -> Option<(Point3<f32>, Vector3<f32>, ChartId)> {
+        if !self.active {
+            return None;
+        }
+        let d_prev = (prev_pos - self.bounds.center).dot(self.bounds.normal);
+        let d_curr = (curr_pos - self.bounds.center).dot(self.bounds.normal);
+
+        // Must cross the portal plane between prev_pos and curr_pos
+        if (d_prev > 0.0 && d_curr <= 0.0) || (self.bidirectional && d_prev < 0.0 && d_curr >= 0.0) {
+            let denom = (d_prev - d_curr).abs().max(1e-6);
+            let t = (d_prev.abs() / denom).clamp(0.0, 1.0);
+            let crossing_pt = prev_pos + (curr_pos - prev_pos) * t;
+            if self.contains_point(crossing_pt) {
+                let new_pos = self.transform_point(curr_pos);
+                let new_dir = self.transform_vector(forward_dir).normalize();
+                return Some((new_pos, new_dir, self.to_chart));
+            }
+        }
+        None
     }
     
     /// Check if a ray intersects the portal
@@ -144,9 +199,15 @@ impl Portal {
         
         match self.bounds.shape {
             PortalShape::Rectangular => {
-                // Project onto portal plane
-                let right = self.bounds.normal.cross(Vector3::new(0.0, 1.0, 0.0)).normalize();
-                let up = self.bounds.normal.cross(right);
+                // Project onto portal plane using singularity-free reference up vector
+                let n = self.bounds.normal.normalize();
+                let ref_up = if n.y.abs() > 0.99 {
+                    Vector3::new(1.0, 0.0, 0.0)
+                } else {
+                    Vector3::new(0.0, 1.0, 0.0)
+                };
+                let right = n.cross(ref_up).normalize();
+                let up = right.cross(n).normalize();
                 
                 let x = local.dot(right);
                 let y = local.dot(up);

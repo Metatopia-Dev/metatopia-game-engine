@@ -213,44 +213,70 @@ impl ManifoldRaycaster {
 
         let mut remaining = max_distance;
         let step = step_size.max(0.01);
+        let max_iters = ((max_distance / step) as usize + max_portal_jumps * 4 + 32).min(4096);
+        let mut iter_count = 0usize;
 
-        while remaining > 0.0 && portal_jumps <= max_portal_jumps {
-            let chart_geom = manifold.get_chart(current_chart)
-                .map(|c| c.geometry())
-                .unwrap_or(GeometryType::Euclidean);
+        // Cache chart geometry and active portals; refresh only when chart changes on a portal jump
+        let mut chart_geom = manifold
+            .get_chart(current_chart)
+            .map(|c| c.geometry())
+            .unwrap_or(GeometryType::Euclidean);
+        let mut active_portals: Vec<_> = manifold
+            .portals_from_chart(current_chart)
+            .into_iter()
+            .filter(|p| p.is_active())
+            .collect();
 
-            // Compute curvature deflection vector
-            let metric = Metric::from_geometry(chart_geom);
-            let deflection = match chart_geom {
-                GeometryType::Euclidean => Vector3::new(0.0, 0.0, 0.0),
-                GeometryType::Hyperbolic => {
-                    // Hyperbolic geodesic acceleration points outward from origin
-                    let r = current_pos.to_vec().magnitude().max(0.1);
-                    (current_pos.to_vec() / (1.0 - (r * 0.1).min(0.9))) * 0.05
-                }
-                GeometryType::Spherical => {
-                    // Spherical geodesic bends toward origin/great circle
-                    -current_pos.to_vec() * 0.08
+        while remaining > 1e-4 && portal_jumps <= max_portal_jumps && iter_count < max_iters {
+            iter_count += 1;
+            let actual_step = step.min(remaining);
+            let half_step = actual_step * 0.5;
+            let coord_scale = 0.08f32;
+
+            // Compute midpoint RK2 geodesic tangent & position update
+            let (mid_dir, next_dir) = match chart_geom {
+                GeometryType::Euclidean => (current_dir, current_dir),
+                GeometryType::Hyperbolic | GeometryType::Spherical => {
+                    let k = if chart_geom == GeometryType::Hyperbolic { -1.0 } else { 1.0 };
+                    let scaled_pos = Point3::from_vec(current_pos.to_vec() * coord_scale);
+                    let cs1 = super::metric::ChristoffelSymbols::from_conformal_point(scaled_pos, k);
+                    let a1 = cs1.geodesic_acceleration(scaled_pos.to_vec(), current_dir) * coord_scale;
+                    let m_dir = {
+                        let v = current_dir + a1 * half_step;
+                        if v.magnitude2() > 1e-8 { v.normalize() } else { current_dir }
+                    };
+                    let mid_pos = Point3::from_vec((current_pos + current_dir * half_step).to_vec() * coord_scale);
+                    let cs2 = super::metric::ChristoffelSymbols::from_conformal_point(mid_pos, k);
+                    let a2 = cs2.geodesic_acceleration(mid_pos.to_vec(), m_dir) * coord_scale;
+                    let n_dir = {
+                        let v = current_dir + a2 * actual_step;
+                        if v.magnitude2() > 1e-8 { v.normalize() } else { m_dir }
+                    };
+                    (m_dir, n_dir)
                 }
                 GeometryType::Custom => {
+                    let metric = Metric::from_geometry(chart_geom);
                     let tensor = metric.tensor_at(current_pos);
-                    Vector3::new(tensor.curvature * 0.02, 0.0, tensor.curvature * 0.02)
+                    let cs = super::metric::ChristoffelSymbols::from_conformal_point(current_pos, tensor.curvature);
+                    let a = cs.geodesic_acceleration(current_pos.to_vec(), current_dir) * coord_scale;
+                    let n_dir = {
+                        let v = current_dir + a * actual_step;
+                        if v.magnitude2() > 1e-8 { v.normalize() } else { current_dir }
+                    };
+                    (n_dir, n_dir)
                 }
             };
 
-            let next_dir = (current_dir + deflection * step).normalize();
-            let next_pos = current_pos + next_dir * step.min(remaining);
-            let seg_len = (next_pos - current_pos).magnitude();
+            let next_pos = current_pos + mid_dir * actual_step;
 
-            // Check portal intersection along this step
+            // Check portal intersection against cached active portals for current chart
             let mut hit_portal: Option<(Point3<f32>, PortalId, f32)> = None;
-            for portal in manifold.portals() {
-                if portal.source_chart() == current_chart && portal.is_active() {
-                    if let Some(inter) = portal.ray_intersection(current_pos, next_dir) {
-                        let d: f32 = (inter - current_pos).magnitude();
-                        if d <= seg_len {
+            for portal in &active_portals {
+                if let Some(inter) = portal.ray_intersection(current_pos, mid_dir) {
+                    let d: f32 = (inter - current_pos).magnitude();
+                    if d > 1e-4 && d <= actual_step {
+                        if hit_portal.as_ref().map_or(true, |(_, _, best_d)| d < *best_d) {
                             hit_portal = Some((inter, portal.id(), d));
-                            break;
                         }
                     }
                 }
@@ -261,27 +287,40 @@ impl ManifoldRaycaster {
                     chart: current_chart,
                     start: current_pos,
                     end: inter,
-                    direction: current_dir,
+                    direction: mid_dir,
                     length: d,
                 });
                 total_length += d;
-                remaining -= d;
+                remaining -= d.max(1e-4);
                 portal_jumps += 1;
 
-                let portal = manifold.get_portal(p_id).unwrap();
-                current_pos = portal.transform_point(inter);
-                current_dir = portal.transform_vector(next_dir).normalize();
-                current_chart = portal.target_chart();
+                if let Some(portal) = manifold.get_portal(p_id) {
+                    current_dir = portal.transform_vector(next_dir).normalize();
+                    let nudge = (step * 0.02).clamp(0.002, 0.02);
+                    current_pos = portal.transform_point(inter) + current_dir * nudge;
+                    current_chart = portal.target_chart();
+                    chart_geom = manifold
+                        .get_chart(current_chart)
+                        .map(|c| c.geometry())
+                        .unwrap_or(GeometryType::Euclidean);
+                    active_portals = manifold
+                        .portals_from_chart(current_chart)
+                        .into_iter()
+                        .filter(|p| p.is_active())
+                        .collect();
+                } else {
+                    break;
+                }
             } else {
                 segments.push(RaySegment {
                     chart: current_chart,
                     start: current_pos,
                     end: next_pos,
-                    direction: current_dir,
-                    length: seg_len,
+                    direction: next_dir,
+                    length: actual_step,
                 });
-                total_length += seg_len;
-                remaining -= seg_len;
+                total_length += actual_step;
+                remaining -= actual_step;
                 current_pos = next_pos;
                 current_dir = next_dir;
             }
@@ -325,6 +364,67 @@ impl ManifoldRaycaster {
         }
         false
     }
+
+    /// Benchmark CPU geodesic & portal ray traversal throughput across a manifold
+    pub fn benchmark_portal_transitions(
+        manifold: &Manifold,
+        start_chart: ChartId,
+        ray_count: usize,
+        max_portal_jumps: usize,
+        step_size: f32,
+    ) -> PortalBenchmarkMetrics {
+        let t0 = std::time::Instant::now();
+        let mut total_portal_jumps = 0usize;
+        let mut total_segments = 0usize;
+        let mut total_distance = 0.0f32;
+
+        let n = ray_count.max(1);
+        for i in 0..n {
+            let angle = (i as f32 / n as f32) * 0.4 - 0.2;
+            let pitch = ((i % 16) as f32 / 16.0) * 0.2 - 0.1;
+            let dir = Vector3::new(angle.sin(), pitch, -angle.cos()).normalize();
+            let trace = Self::cast_geodesic_ray(
+                manifold,
+                Point3::new(0.0, 1.0, 2.0),
+                dir,
+                start_chart,
+                40.0,
+                step_size,
+                max_portal_jumps,
+            );
+            total_portal_jumps += trace.portal_jumps;
+            total_segments += trace.segments.len();
+            total_distance += trace.total_length;
+        }
+
+        let elapsed_secs = t0.elapsed().as_secs_f64().max(1e-9);
+        let rays_per_sec = (n as f64) / elapsed_secs;
+        let segments_per_sec = (total_segments as f64) / elapsed_secs;
+
+        PortalBenchmarkMetrics {
+            ray_count: n,
+            max_portal_jumps,
+            total_portal_jumps,
+            total_segments,
+            avg_distance: total_distance / (n as f32),
+            elapsed_ms: elapsed_secs * 1000.0,
+            rays_per_sec,
+            segments_per_sec,
+        }
+    }
+}
+
+/// Telemetry summary for a portal + geodesic raycast benchmark run
+#[derive(Debug, Clone, Copy)]
+pub struct PortalBenchmarkMetrics {
+    pub ray_count: usize,
+    pub max_portal_jumps: usize,
+    pub total_portal_jumps: usize,
+    pub total_segments: usize,
+    pub avg_distance: f32,
+    pub elapsed_ms: f64,
+    pub rays_per_sec: f64,
+    pub segments_per_sec: f64,
 }
 
 // ─── Unit Tests ────────────────────────────────────────────────────────────
@@ -379,5 +479,46 @@ mod tests {
         );
 
         assert!(trace.portal_jumps >= 1);
+    }
+
+    #[test]
+    fn test_recursive_portal_loop_and_benchmark() {
+        let mut manifold = Manifold::new();
+        let chart_hyp = manifold.add_chart(GeometryType::Hyperbolic);
+        let chart_sph = manifold.add_chart(GeometryType::Spherical);
+
+        // 3-chart cycle: Chart 0 (Euclidean) -> Chart 1 (Hyperbolic) -> Chart 2 (Spherical) -> Chart 0
+        let _ = manifold.create_portal(
+            ChartId(0),
+            chart_hyp,
+            Point3::new(0.0, 1.0, -3.0),
+            Point3::new(0.0, 1.0, 3.0),
+            Matrix4::identity(),
+        );
+        let _ = manifold.create_portal(
+            chart_hyp,
+            chart_sph,
+            Point3::new(0.0, 1.0, -3.0),
+            Point3::new(0.0, 1.0, 3.0),
+            Matrix4::identity(),
+        );
+        let _ = manifold.create_portal(
+            chart_sph,
+            ChartId(0),
+            Point3::new(0.0, 1.0, -3.0),
+            Point3::new(0.0, 1.0, 3.0),
+            Matrix4::identity(),
+        );
+
+        let metrics = ManifoldRaycaster::benchmark_portal_transitions(
+            &manifold,
+            ChartId(0),
+            64,
+            6,
+            0.25,
+        );
+        assert_eq!(metrics.ray_count, 64);
+        assert!(metrics.total_portal_jumps > 0);
+        assert!(metrics.rays_per_sec > 100.0);
     }
 }
