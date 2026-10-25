@@ -69,7 +69,7 @@ impl Camera {
                     let adjusted_view = self.hyperbolic_view_matrix(eye);
                     self.view_matrix = adjusted_view;
                 }
-                GeometryType::Custom => {
+                GeometryType::Custom | GeometryType::Torus | GeometryType::KleinBottle => {
                     self.view_matrix = Matrix4::look_at_rh(eye, self.target, self.up);
                 }
             }

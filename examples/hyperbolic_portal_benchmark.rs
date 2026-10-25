@@ -16,7 +16,8 @@
 
 use cgmath::{InnerSpace, Matrix4, Point3, SquareMatrix, Vector3};
 use metatopia_engine::manifold::{
-    ChartId, ChristoffelSymbols, GeometryType, Manifold, ManifoldRaycaster, Metric, PortalShape,
+    ChartId, ChristoffelSymbols, GeodesicParticleSwarm, GeometryType, Manifold, ManifoldRaycaster,
+    Metric, PortalShape,
 };
 use std::sync::Arc;
 use std::time::Instant;
@@ -63,6 +64,7 @@ pub enum BenchmarkScene {
     HyperbolicHoneycomb = 1,
     MultiChartCurvatureBridge = 2,
     RecursiveMirrorTunnel = 3,
+    KleinBottleTorusLabyrinth = 4,
 }
 
 impl BenchmarkScene {
@@ -72,15 +74,17 @@ impl BenchmarkScene {
             Self::HyperbolicHoneycomb => "Hyperbolic H3 {4,3,5} Conformal Honeycomb Lattice",
             Self::MultiChartCurvatureBridge => "Multi-Chart Curvature Bridge (E3 -> H3 -> S3)",
             Self::RecursiveMirrorTunnel => "Recursive Portal Mirror Tunnel Stress Test",
+            Self::KleinBottleTorusLabyrinth => "Non-Orientable Klein Bottle K3 & T3 Torus Labyrinth",
         }
     }
 
     pub fn from_index(idx: u32) -> Self {
-        match idx % 4 {
+        match idx % 5 {
             0 => Self::ImpossibleCorridorLoop,
             1 => Self::HyperbolicHoneycomb,
             2 => Self::MultiChartCurvatureBridge,
-            _ => Self::RecursiveMirrorTunnel,
+            3 => Self::RecursiveMirrorTunnel,
+            _ => Self::KleinBottleTorusLabyrinth,
         }
     }
 }
@@ -88,9 +92,19 @@ impl BenchmarkScene {
 /// Build the multi-chart CPU `Manifold` matching the GPU WGSL portal configuration
 pub fn build_benchmark_manifold(scene: BenchmarkScene) -> (Manifold, [[f32; 4]; 12]) {
     let mut manifold = Manifold::new(); // ChartId(0) = Euclidean Sanctuary
-    let chart_hyp = manifold.add_chart(GeometryType::Hyperbolic); // ChartId(1) = Hyperbolic H³
-    let chart_sph = manifold.add_chart(GeometryType::Spherical);  // ChartId(2) = Spherical S³
-    let chart_esc = manifold.add_chart(GeometryType::Custom);     // ChartId(3) = Escher Twisted
+    let (chart_hyp, chart_sph, chart_esc) = if scene == BenchmarkScene::KleinBottleTorusLabyrinth {
+        (
+            manifold.add_chart(GeometryType::KleinBottle), // ChartId(1) = Non-Orientable Klein Bottle K³
+            manifold.add_chart(GeometryType::Torus),       // ChartId(2) = Flat 3-Torus T³
+            manifold.add_chart(GeometryType::Hyperbolic),  // ChartId(3) = Hyperbolic H³
+        )
+    } else {
+        (
+            manifold.add_chart(GeometryType::Hyperbolic), // ChartId(1) = Hyperbolic H³
+            manifold.add_chart(GeometryType::Spherical),  // ChartId(2) = Spherical S³
+            manifold.add_chart(GeometryType::Custom),     // ChartId(3) = Escher Twisted
+        )
+    };
 
     let portal_uniforms = match scene {
         BenchmarkScene::RecursiveMirrorTunnel => {
@@ -592,7 +606,7 @@ fn run_headless_benchmark_suite() {
     );
     println!("{}", "-".repeat(86));
 
-    for scene_idx in 0..4 {
+    for scene_idx in 0..5 {
         let scene = BenchmarkScene::from_index(scene_idx);
         let (manifold, _) = build_benchmark_manifold(scene);
         let metrics = ManifoldRaycaster::benchmark_portal_transitions(
@@ -612,12 +626,40 @@ fn run_headless_benchmark_suite() {
         );
     }
 
-    // 3. Verify Christoffel Symbol & Möbius Gyrovector Invariants
+    // 3. 3D GeodesicParticleSwarm RK4 Advection + Klein Bottle Chirality Benchmark
+    println!("\n--- 3. 3D GeodesicParticleSwarm RK4 Advection & Portal Chirality Benchmark ---");
+    let (klein_manifold, _) = build_benchmark_manifold(BenchmarkScene::KleinBottleTorusLabyrinth);
+    let mut swarm = GeodesicParticleSwarm::new_golden_spiral(1024, ChartId(0), 4.2);
+    let swarm_t0 = Instant::now();
+    let rk4_steps = 60usize;
+    for _ in 0..rk4_steps {
+        swarm.step_rk4(&klein_manifold, 0.08);
+    }
+    let swarm_ms = swarm_t0.elapsed().as_secs_f64() * 1000.0;
+    let total_swarm_crossings = swarm.total_portal_crossings;
+    let chiral_flipped = swarm
+        .particles
+        .iter()
+        .filter(|p| p.chirality < 0)
+        .count();
+    let m_steps_per_sec = ((1024 * rk4_steps) as f64 / (swarm_ms / 1000.0)) / 1_000_000.0;
+    println!(
+        "Swarm (1024 particles × 60 RK4 steps) : {:.2} ms ({:.2} M particle-steps/s) | Portal Crossings: {} | Chiral Flipped (det J = -1): {}",
+        swarm_ms, m_steps_per_sec, total_swarm_crossings, chiral_flipped
+    );
+
+    // 4. Verify Christoffel Symbol, 3D Gyrometric Geodesic & Möbius Gyrovector Invariants
     let p_test = Point3::new(0.3, 0.4, 0.0);
     let cs = ChristoffelSymbols::from_conformal_point(p_test, -1.0);
     let u_vec = Vector3::new(0.25, -0.15, 0.10);
     let mobius_inv_err = Metric::mobius_add(u_vec, -u_vec, -1.0).magnitude();
-    println!("\n--- 3. Differential Geometry & Non-Euclidean Invariant Checks ---");
+    let hyp_metric = Metric::from_geometry(GeometryType::Hyperbolic);
+    let p_3d_a = Point3::new(0.15, -0.20, 0.25);
+    let p_3d_b = Point3::new(-0.25, 0.30, -0.18);
+    let p_3d_mid = Metric::gyrometric_geodesic_point_3d(p_3d_a, p_3d_b, 0.5, -1.0);
+    let d_ab = hyp_metric.distance(p_3d_a, p_3d_b);
+    let d_sum = hyp_metric.distance(p_3d_a, p_3d_mid) + hyp_metric.distance(p_3d_mid, p_3d_b);
+    println!("\n--- 4. Differential Geometry & Non-Euclidean Invariant Checks ---");
     println!(
         "Poincaré Christoffel Γ⁰₀₀(0.3,0.4,0) : {:.6} (exact analytical = 0.800000)",
         cs.gamma[0][0][0]
@@ -625,6 +667,10 @@ fn run_headless_benchmark_suite() {
     println!(
         "Möbius Gyrovector Inverse ||u ⊕ (-u)||: {:.2e} (exact identity = 0.00e0)",
         mobius_inv_err
+    );
+    println!(
+        "3D Gyrometric Geodesic Midpoint Error : {:.2e} (d(a,m)+d(m,b)-d(a,b) in H³)",
+        (d_sum - d_ab).abs()
     );
     println!("================================================================================");
 }
@@ -1371,12 +1417,12 @@ fn run_video_recording(output_path: &str) {
                     app.heatmap_mode = 0;
                 }
                 24 => {
-                    // Movement III-B (45..60s): VERSE // 12-BOUNCE CORRIDOR ACCELERATION
-                    app.set_scene(BenchmarkScene::ImpossibleCorridorLoop);
+                    // Movement III-B (45..60s): VERSE // KLEIN BOTTLE K3 CHIRAL LABYRINTH
+                    app.set_scene(BenchmarkScene::KleinBottleTorusLabyrinth);
                     app.auto_tour = true;
-                    app.max_portal_bounces = 12;
-                    app.max_steps = 108.0;
-                    app.curvature_k = -0.95;
+                    app.max_portal_bounces = 14;
+                    app.max_steps = 112.0;
+                    app.curvature_k = -0.88;
                     app.heatmap_mode = 0;
                 }
                 32 => {
@@ -1445,12 +1491,12 @@ fn run_video_recording(output_path: &str) {
                     app.heatmap_mode = 0;
                 }
                 84 => {
-                    // Movement VIII-C (157.5..165s): CLIMAX // 16-BOUNCE CORRIDOR FINALE
-                    app.set_scene(BenchmarkScene::ImpossibleCorridorLoop);
+                    // Movement VIII-C (157.5..165s): CLIMAX // KLEIN BOTTLE K3 CHIRAL FINALE
+                    app.set_scene(BenchmarkScene::KleinBottleTorusLabyrinth);
                     app.auto_tour = true;
                     app.max_portal_bounces = 16;
-                    app.max_steps = 116.0;
-                    app.curvature_k = -1.05;
+                    app.max_steps = 118.0;
+                    app.curvature_k = -1.02;
                     app.heatmap_mode = 0;
                 }
                 88 => {
@@ -1481,6 +1527,9 @@ fn run_video_recording(output_path: &str) {
             }
             BenchmarkScene::RecursiveMirrorTunnel => {
                 app.curvature_k = -1.05 - 0.35 * kick_env;
+            }
+            BenchmarkScene::KleinBottleTorusLabyrinth => {
+                app.curvature_k = -0.88 - 0.32 * kick_env + 0.15 * (elapsed * 1.25).cos();
             }
         }
 
@@ -1564,12 +1613,14 @@ fn run_video_recording(output_path: &str) {
         let movement_label = match bar_idx {
             0..=7 => "I. INTRO // POINCARE HORIZON [BARS 1-8]",
             8..=15 => "II. GROOVE // ACID REESE PROPULSION [BARS 9-16]",
-            16..=31 => "III. VERSE // CYBERPUNK LEAD HOOK [BARS 17-32]",
+            16..=23 => "III-A. VERSE // CURVATURE BRIDGE [BARS 17-24]",
+            24..=31 => "III-B. KLEIN BOTTLE K3 CHIRAL LABYRINTH [BARS 25-32]",
             32..=39 => "IV. BREAKDOWN // ETHEREAL H3 CATHEDRAL [BARS 33-40]",
             40..=47 => "V. BUILDUP // GEODESIC SNARE RISER [BARS 41-48]",
             48..=63 => "VI. DROP I // 16-BOUNCE INFINITY TUNNEL [BARS 49-64]",
             64..=71 => "VII. BRIDGE // SPHERICAL S3 STAR-VAULT [BARS 65-72]",
-            72..=87 => "VIII. CLIMAX DROP II // HYPERBOLIC OVERDRIVE [BARS 73-88]",
+            72..=83 => "VIII. CLIMAX DROP II // HYPERBOLIC OVERDRIVE [BARS 73-84]",
+            84..=87 => "VIII-C. CLIMAX // KLEIN BOTTLE CHIRAL FINALE [BARS 85-88]",
             _ => "IX. OUTRO // CONFORMAL HORIZON FADE [BARS 89-96]",
         };
         draw_text_rgba(
@@ -1682,7 +1733,7 @@ fn main() {
     println!("  Controls:");
     println!("    WASD + Space/Shift : Walk & fly through non-Euclidean portals");
     println!("    Mouse Left Drag    : Look around");
-    println!("    1 - 4              : Switch Non-Euclidean Scene Preset");
+    println!("    1 - 5              : Switch Non-Euclidean Scene Preset (5 = Klein Bottle K3)");
     println!("    P / O              : Increase / Decrease Max Portal Recursion Bounces (0..16)");
     println!("    K / J              : Increase / Decrease Gaussian Curvature κ (-2.0..+2.0)");
     println!("    G                  : Toggle Analytical RK2 Christoffel Geodesic Bending");
@@ -1845,6 +1896,9 @@ fn main() {
                         }
                         KeyCode::Digit4 if pressed => {
                             app.set_scene(BenchmarkScene::RecursiveMirrorTunnel)
+                        }
+                        KeyCode::Digit5 if pressed => {
+                            app.set_scene(BenchmarkScene::KleinBottleTorusLabyrinth)
                         }
                         KeyCode::KeyP | KeyCode::ArrowUp if pressed => {
                             app.max_portal_bounces = (app.max_portal_bounces + 1).min(16);

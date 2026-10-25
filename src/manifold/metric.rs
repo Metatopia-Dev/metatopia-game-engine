@@ -4,11 +4,13 @@ use cgmath::{Point3, Vector3, Matrix3, Matrix4, InnerSpace, SquareMatrix};
 use super::GeodesicPath;
 
 /// Type of geometry for a space region
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GeometryType {
-    Euclidean,      // Flat space (zero curvature)
-    Spherical,      // Positive curvature
-    Hyperbolic,     // Negative curvature
+    Euclidean,      // Flat space (zero curvature, R^3)
+    Spherical,      // Positive curvature (S^3)
+    Hyperbolic,     // Negative curvature (H^3 Poincaré ball)
+    Torus,          // Flat periodic 3-Torus quotient manifold (T^3 = R^3 / Z^3)
+    KleinBottle,    // Non-orientable parity-flipping quotient manifold (K^3)
     Custom,         // User-defined metric
 }
 
@@ -32,7 +34,7 @@ impl MetricTensor {
     pub fn spherical(radius: f32, theta: f32, _phi: f32) -> Self {
         let r2 = radius * radius;
         let sin_theta = theta.sin();
-        let sin2_theta = sin_theta * sin_theta;
+        let sin2_theta = (sin_theta * sin_theta).max(1e-4);
         
         Self {
             g: Matrix3::new(
@@ -44,7 +46,7 @@ impl MetricTensor {
         }
     }
     
-    /// Create hyperbolic metric (Poincaré disk model)
+    /// Create 2D/cylindrical hyperbolic metric (Poincaré disk model)
     pub fn hyperbolic_poincare(x: f32, y: f32) -> Self {
         let r2 = x * x + y * y;
         let lambda = 2.0 / (1.0 - r2).max(0.01);
@@ -59,15 +61,23 @@ impl MetricTensor {
             curvature: -1.0,
         }
     }
+
+    /// Create full 3D hyperbolic Poincaré ball metric: ds² = (2 / (1 - ||x||²))² (dx² + dy² + dz²)
+    pub fn hyperbolic_poincare_3d(p: Point3<f32>) -> Self {
+        let r2 = p.x * p.x + p.y * p.y + p.z * p.z;
+        let lambda = 2.0 / (1.0 - r2).max(0.01);
+        let lambda2 = lambda * lambda;
+
+        Self {
+            g: Matrix3::from_diagonal(Vector3::new(lambda2, lambda2, lambda2)),
+            curvature: -1.0,
+        }
+    }
     
     /// Create 3D conformal metric (Poincaré ball for k < 0, stereographic sphere for k > 0)
     pub fn conformal_3d(p: Point3<f32>, curvature: f32) -> Self {
         let r2 = p.x * p.x + p.y * p.y + p.z * p.z;
-        let denom = if curvature < 0.0 {
-            (1.0 + curvature * 0.25 * r2).max(0.02)
-        } else {
-            (1.0 + curvature * 0.25 * r2).max(0.02)
-        };
+        let denom = (1.0 + curvature * 0.25 * r2).max(0.02);
         let lambda = 2.0 / denom;
         let lambda2 = lambda * lambda;
 
@@ -223,6 +233,16 @@ impl Metric {
                 radius: 1.0,
                 custom_fn: None,
             },
+            GeometryType::Torus => MetricParameters {
+                curvature: 0.0,
+                radius: 10.0, // Default fundamental domain half-extent L = 10.0 (period = 20.0)
+                custom_fn: None,
+            },
+            GeometryType::KleinBottle => MetricParameters {
+                curvature: 0.0,
+                radius: 10.0, // Default fundamental domain half-extent L = 10.0 with z-parity flip
+                custom_fn: None,
+            },
             GeometryType::Custom => MetricParameters {
                 curvature: 0.0,
                 radius: 1.0,
@@ -240,7 +260,9 @@ impl Metric {
     /// Get metric tensor at a point
     pub fn tensor_at(&self, point: Point3<f32>) -> MetricTensor {
         match self.geometry {
-            GeometryType::Euclidean => MetricTensor::identity(),
+            GeometryType::Euclidean | GeometryType::Torus | GeometryType::KleinBottle => {
+                MetricTensor::identity()
+            }
             GeometryType::Spherical => {
                 // Convert to spherical coordinates (safe against r = 0)
                 let r = (point.x * point.x + point.y * point.y + point.z * point.z).sqrt().max(1e-5);
@@ -249,13 +271,13 @@ impl Metric {
                 MetricTensor::spherical(self.parameters.radius, theta, phi)
             }
             GeometryType::Hyperbolic => {
-                MetricTensor::hyperbolic_poincare(point.x, point.y)
+                MetricTensor::hyperbolic_poincare_3d(point)
             }
             GeometryType::Custom => {
                 if let Some(custom_fn) = self.parameters.custom_fn {
                     custom_fn(point)
                 } else {
-                    MetricTensor::identity()
+                    MetricTensor::conformal_3d(point, self.parameters.curvature)
                 }
             }
         }
@@ -278,11 +300,45 @@ impl Metric {
             GeometryType::Hyperbolic => {
                 Self::poincare_distance_3d(a, b)
             }
+            GeometryType::Torus => {
+                Self::torus_distance_3d(a, b, self.parameters.radius * 2.0)
+            }
+            GeometryType::KleinBottle => {
+                Self::klein_bottle_distance_3d(a, b, self.parameters.radius * 2.0)
+            }
             GeometryType::Custom => {
-                // Fallback to Euclidean
                 (b - a).magnitude()
             }
         }
+    }
+
+    /// Minimum-image distance on a flat 3-Torus T³ = R³ / (period * Z)³
+    pub fn torus_distance_3d(a: Point3<f32>, b: Point3<f32>, period: f32) -> f32 {
+        let p = period.max(1e-4);
+        let dx = (b.x - a.x) - p * ((b.x - a.x) / p).round();
+        let dy = (b.y - a.y) - p * ((b.y - a.y) / p).round();
+        let dz = (b.z - a.z) - p * ((b.z - a.z) / p).round();
+        (dx * dx + dy * dy + dz * dz).sqrt()
+    }
+
+    /// Geodesic distance on a non-orientable 3D Klein Bottle K³ with period `p`:
+    /// Crossing z by ±k*p applies the parity involution x -> (-1)^k * x.
+    pub fn klein_bottle_distance_3d(a: Point3<f32>, b: Point3<f32>, period: f32) -> f32 {
+        let p = period.max(1e-4);
+        let mut best_d2 = f32::INFINITY;
+        for kz in -1..=1 {
+            let parity = if kz != 0 { -1.0 } else { 1.0 };
+            let bx_img = parity * b.x;
+            let bz_img = b.z + (kz as f32) * p;
+            let dx = (bx_img - a.x) - p * ((bx_img - a.x) / p).round();
+            let dy = (b.y - a.y) - p * ((b.y - a.y) / p).round();
+            let dz = bz_img - a.z;
+            let d2 = dx * dx + dy * dy + dz * dz;
+            if d2 < best_d2 {
+                best_d2 = d2;
+            }
+        }
+        best_d2.sqrt()
     }
 
     /// Exact 3D Poincaré ball geodesic distance:
@@ -313,6 +369,41 @@ impl Metric {
         let coef_u = 1.0 + 2.0 * k * uv + k * v2;
         let coef_v = 1.0 - k * u2;
         (u * coef_u + v * coef_v) / denom
+    }
+
+    /// Ungar gyroscalar multiplication r ⊗_K u in the 3D Poincaré ball (K < 0) or sphere (K > 0)
+    pub fn mobius_scalar_mul(r: f32, u: Vector3<f32>, curvature_k: f32) -> Vector3<f32> {
+        let norm = u.magnitude();
+        if norm < 1e-7 || r.abs() < 1e-7 {
+            return Vector3::new(0.0, 0.0, 0.0);
+        }
+        if curvature_k.abs() < 1e-6 {
+            return u * r;
+        }
+        let c_sqrt = curvature_k.abs().sqrt();
+        let unit = u / norm;
+        if curvature_k < 0.0 {
+            let scaled = (c_sqrt * norm).min(0.999_9).atanh();
+            unit * ((r * scaled).tanh() / c_sqrt)
+        } else {
+            let scaled = (c_sqrt * norm).atan();
+            unit * ((r * scaled).tan() / c_sqrt)
+        }
+    }
+
+    /// Closed-form 3D gyrometric geodesic point γ(t) = a ⊕_K (t ⊗_K ((-a) ⊕_K b)) for t ∈ [0, 1]
+    pub fn gyrometric_geodesic_point_3d(
+        a: Point3<f32>,
+        b: Point3<f32>,
+        t: f32,
+        curvature_k: f32,
+    ) -> Point3<f32> {
+        let ua = Vector3::new(a.x, a.y, a.z);
+        let ub = Vector3::new(b.x, b.y, b.z);
+        let delta = Self::mobius_add(-ua, ub, curvature_k);
+        let step = Self::mobius_scalar_mul(t, delta, curvature_k);
+        let res = Self::mobius_add(ua, step, curvature_k);
+        Point3::new(res.x, res.y, res.z)
     }
     
     /// Parallel transport a vector along a path using analytical Christoffel symbols
@@ -397,5 +488,31 @@ mod tests {
         let d_ba = Metric::poincare_distance_3d(b, a);
         assert!((d_ab - d_ba).abs() < 1e-5);
         assert!(d_ab > 0.0);
+    }
+
+    #[test]
+    fn test_gyrometric_geodesic_midpoint_bisects_poincare_distance() {
+        let a = Point3::new(0.15, -0.25, 0.20);
+        let b = Point3::new(-0.30, 0.20, -0.15);
+        let mid = Metric::gyrometric_geodesic_point_3d(a, b, 0.5, -1.0);
+        let d_total = Metric::poincare_distance_3d(a, b);
+        let d_a_mid = Metric::poincare_distance_3d(a, mid);
+        let d_mid_b = Metric::poincare_distance_3d(mid, b);
+        assert!((d_a_mid - d_mid_b).abs() < 1e-4);
+        assert!(((d_a_mid + d_mid_b) - d_total).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_torus_and_klein_bottle_distances() {
+        let a = Point3::new(4.0, 0.0, -9.0);
+        let b = Point3::new(-4.0, 0.0, 9.0);
+        // On a period-20 Torus, dz wraps to -2.0, but dx stays -8.0 -> sqrt(64 + 4) = sqrt(68) = 8.246
+        let d_torus = Metric::torus_distance_3d(a, b, 20.0);
+        assert!((d_torus - 68.0_f32.sqrt()).abs() < 1e-4);
+
+        // On a period-20 Klein Bottle, crossing z-boundary flips x -> -x, so b.x=-4 becomes +4 (= a.x)!
+        // Thus dx = 0, dy = 0, dz = -2 -> distance is 2.0!
+        let d_klein = Metric::klein_bottle_distance_3d(a, b, 20.0);
+        assert!((d_klein - 2.0).abs() < 1e-4);
     }
 }

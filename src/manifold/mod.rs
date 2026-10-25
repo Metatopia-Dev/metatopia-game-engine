@@ -14,7 +14,10 @@ pub use chart::{Chart, ChartId, LocalCoordinate};
 pub use portal::{Portal, PortalId, PortalConnection, PortalShape, PortalBounds};
 pub use geodesic::{Geodesic, GeodesicPath};
 pub use metric::{Metric, MetricTensor, GeometryType, ChristoffelSymbols};
-pub use raycast::{ManifoldRay, RaySegment, ManifoldRayHit, ManifoldRayTrace, ManifoldRaycaster, PortalBenchmarkMetrics};
+pub use raycast::{
+    GeodesicParticle, GeodesicParticleSwarm, ManifoldRay, ManifoldRayHit, ManifoldRayTrace,
+    ManifoldRaycaster, PortalBenchmarkMetrics, RaySegment,
+};
 
 /// A manifold representing the entire non-Euclidean world
 #[derive(Clone)]

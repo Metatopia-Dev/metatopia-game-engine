@@ -149,9 +149,23 @@ fn sd_portal_aperture(p: vec3<f32>, center: vec3<f32>, normal: vec3<f32>, half_w
     return sd_box(local, vec3<f32>(half_w, half_h, 0.03));
 }
 
+// 3D Geodesic Particle Swarm SDF: Dual helical streams of particles advecting along curved geodesics through portals
+fn sd_geodesic_swarm(p: vec3<f32>, time: f32, curvature_k: f32) -> f32 {
+    let z_speed = time * 6.4;
+    let z_cell = 1.6;
+    let z_local = (p.z + z_speed) - round((p.z + z_speed) / z_cell) * z_cell;
+    let cell_idx = round((p.z + z_speed) / z_cell);
+    let phase = cell_idx * 2.39996 + time * 1.8;
+    let r_orbit = 1.48 + 0.18 * sin(cell_idx * 0.7 + curvature_k);
+    let orb_a = vec3<f32>(r_orbit * cos(phase), 1.62 + 0.85 * r_orbit * sin(phase), z_local);
+    let orb_b = vec3<f32>(-r_orbit * cos(phase), 1.62 - 0.85 * r_orbit * sin(phase), z_local);
+    let q = vec3<f32>(p.x, p.y, z_local);
+    return min(length(q - orb_a), length(q - orb_b)) - 0.075;
+}
+
 struct SdfHit {
     dist: f32,
-    material_id: u32,   // 0=walls, 1=chrome_arch, 2=neon_ring, 3=portal_frame, 4=honeycomb, 10..13=portal_aperture
+    material_id: u32,   // 0=walls, 1=chrome_arch, 2=neon_ring, 3=portal_frame, 4=honeycomb, 5=klein_chiral, 10..13=portal_aperture
     portal_idx: i32,
 }
 
@@ -223,7 +237,6 @@ fn map_chart_scene(pos: vec3<f32>, chart_id: u32, scene_mode: u32, skip_portal_C
 
     if (scene_mode == 2u) {
         // ── Scene 2: Multi-Chart Curvature Bridge — Cylindrical Spherical S³ Star-Vault ──
-        // Distinct cylindrical vault architecture with ribbed geodesic rings (no flat grazing side-wall slabs!)
         let cyl_r = 4.35 + 0.35 * sin(p.z * 0.35);
         let room_d = -(length(p.xy - vec2<f32>(0.0, 1.6)) - cyl_r);
         best.dist = room_d;
@@ -244,6 +257,35 @@ fn map_chart_scene(pos: vec3<f32>, chart_id: u32, scene_mode: u32, skip_portal_C
         let arch_ring = sd_torus(arch_p, vec2<f32>(2.55 + 0.16 * bass, 0.065 + 0.02 * kick)) + near_guard;
         if (arch_ring < best.dist) {
             best.dist = arch_ring;
+            best.material_id = 2u;
+        }
+    } else if (scene_mode == 4u) {
+        // ── Scene 4: Non-Orientable Klein Bottle K³ & Flat 3-Torus T³ Chiral Labyrinth ──
+        // Figure-8 twisted vault with asymmetric chiral pillars so X -> -X parity flip is visibly dramatic!
+        let twist_angle = p.z * 0.28;
+        let twisted_xy = rotate_z(vec3<f32>(p.x, p.y - 1.6, 0.0), twist_angle).xy;
+        let room_d = -(length(twisted_xy * vec2<f32>(0.82, 1.05)) - 4.45);
+        best.dist = room_d;
+        best.material_id = 0u;
+
+        // Asymmetric Chiral Double-Helix Pillars (Left x < 0 vs Right x > 0 have opposite chirality & color!)
+        let z_rep = p.z - round(p.z / 2.0) * 2.0;
+        let chiral_offset = 0.45 * sin(p.z * 0.9 + select(-1.2, 1.2, p.x > 0.0));
+        let col_x = abs(p.x) - 2.85;
+        let col_y = (p.y - 1.6) - chiral_offset;
+        let chiral_pillar = sd_box(vec3<f32>(col_x, col_y, z_rep), vec3<f32>(0.34, 1.85, 0.26));
+        if (chiral_pillar < best.dist) {
+            best.dist = chiral_pillar;
+            best.material_id = 5u;
+        }
+
+        // Twisted Möbius / Klein Immersion Halo Rings coaxial with the portal sightline
+        let ring_z = p.z - round(p.z / 2.8) * 2.8;
+        let fig8_warp = 0.22 * sin(atan2(p.y - 1.6, p.x) * 2.0 + p.z * 0.5);
+        let rp = vec3<f32>(p.x, p.y - 1.6, ring_z);
+        let klein_ring = sd_torus(rp, vec2<f32>(2.42 + fig8_warp + 0.14 * kick, 0.06 + 0.02 * arp)) + near_guard;
+        if (klein_ring < best.dist) {
+            best.dist = klein_ring;
             best.material_id = 2u;
         }
     } else {
@@ -339,6 +381,7 @@ struct TraceResult {
     total_dist: f32,
     steps_taken: u32,
     portal_bounces: u32,
+    parity_sign: f32,
     portal_glow: vec3<f32>,
 }
 
@@ -357,6 +400,7 @@ fn trace_non_euclidean_manifold(
     res.total_dist = 0.0;
     res.steps_taken = 0u;
     res.portal_bounces = 0u;
+    res.parity_sign = 1.0;
     res.portal_glow = vec3<f32>(0.0);
 
     let max_bounces = u32(round(u.params.x));
@@ -378,6 +422,13 @@ fn trace_non_euclidean_manifold(
 
         // Attenuate volumetric bloom on deep portal bounces so innermost levels stay crisp and never blow out to white
         let bounce_atten = exp(-0.22 * f32(res.portal_bounces));
+
+        // Volumetric Geodesic Particle Swarm streaming along curved trajectories through portals
+        let swarm_d = sd_geodesic_swarm(curr_pos, u.resolution.z, base_k);
+        if (swarm_d < 0.45) {
+            let p_col = portal_accent_color(curr_chart + res.portal_bounces + 2u);
+            res.portal_glow += p_col * (0.012 * (1.0 + 0.8 * arp) * bounce_atten * march_step / (0.02 + swarm_d * swarm_d * 24.0));
+        }
 
         // Crisp volumetric neon glow strictly around solid portal frames (material_id == 3) and laser rings (material_id == 2)
         if (hit.material_id == 3u && hit.portal_idx >= 0) {
@@ -423,6 +474,11 @@ fn trace_non_euclidean_manifold(
                         let roll = 0.16;
                         rot_offset = rotate_z(rot_offset, roll);
                         curr_dir = normalize(rotate_z(curr_dir, roll));
+                    } else if (scene_mode == 4u) {
+                        // Non-Orientable Klein Bottle K³ Parity Flip: reflect X -> -X and invert chirality!
+                        rot_offset.x = -rot_offset.x;
+                        curr_dir.x = -curr_dir.x;
+                        res.parity_sign = -res.parity_sign;
                     }
 
                     // Local tangent-space Möbius conformal transport (centered at portal origin so |rel| < 1)
@@ -643,6 +699,18 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 metallic = 0.94;
                 roughness = 0.14;
                 emissive = strut_tint * (grid * 1.35 + fresnel * (0.85 + 0.65 * bass) * (1.0 - 0.70 * depth_mix));
+            } else if (trace.material_id == 5u) {
+                // Non-Orientable Klein Bottle Chiral Pillars — Left/Right Handedness Flips on Every Portal Bounce!
+                let handedness = trace.pos.x * trace.parity_sign;
+                let chiral_col = select(
+                    vec3<f32>(0.05, 0.95, 1.0), // Left-handed chirality: Laser Cyan
+                    vec3<f32>(1.0, 0.72, 0.10), // Right-handed chirality: Solar Gold
+                    handedness > 0.0
+                );
+                albedo = vec3<f32>(0.016, 0.018, 0.032);
+                metallic = 0.93;
+                roughness = 0.12;
+                emissive = chiral_col * (grid * 1.45 + fresnel * (0.95 + 0.65 * kick)) * bounce_lod;
             }
 
             // GGX / Blinn-Phong high-contrast microfacet specular + Schlick Fresnel

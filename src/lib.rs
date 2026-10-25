@@ -81,7 +81,8 @@ pub mod prelude {
     pub use crate::audio::{AudioEngine, AudioListener, SpatialSoundSource, AttenuationModel, SpatialAudioEngine};
     pub use crate::manifold::{Manifold, Chart, ChartId, Portal, PortalId, PortalShape,
                               GeometryType, MetricTensor, ChristoffelSymbols, Geodesic, ManifoldPosition,
-                              ManifoldRay, ManifoldRayHit, ManifoldRayTrace, ManifoldRaycaster, PortalBenchmarkMetrics};
+                              ManifoldRay, ManifoldRayHit, ManifoldRayTrace, ManifoldRaycaster,
+                              PortalBenchmarkMetrics, GeodesicParticle, GeodesicParticleSwarm};
     pub use crate::particles::{Particle, ParticleEmitter, EmitterShape, ParticleSystem};
     pub use crate::physics::{RigidBody, BodyType, PhysicsCollider, GravityField, PhysicsWorld, RaycastVehicle, WheelSuspension};
     pub use crate::geometry::ProceduralMesh;
@@ -107,7 +108,8 @@ pub use manifold::{
     Portal, PortalId, PortalShape, PortalBounds,
     Geodesic, GeodesicPath,
     Metric, MetricTensor, GeometryType, ChristoffelSymbols,
-    ManifoldRay, ManifoldRayHit, ManifoldRayTrace, ManifoldRaycaster, PortalBenchmarkMetrics,
+    ManifoldRay, ManifoldRayHit, ManifoldRayTrace, ManifoldRaycaster,
+    PortalBenchmarkMetrics, GeodesicParticle, GeodesicParticleSwarm,
 };
 pub use manifold::geodesic::GeodesicRay;
 

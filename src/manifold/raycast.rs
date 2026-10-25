@@ -234,8 +234,10 @@ impl ManifoldRaycaster {
             let coord_scale = 0.08f32;
 
             // Compute midpoint RK2 geodesic tangent & position update
-            let (mid_dir, next_dir) = match chart_geom {
-                GeometryType::Euclidean => (current_dir, current_dir),
+            let (mid_dir, mut next_dir) = match chart_geom {
+                GeometryType::Euclidean | GeometryType::Torus | GeometryType::KleinBottle => {
+                    (current_dir, current_dir)
+                }
                 GeometryType::Hyperbolic | GeometryType::Spherical => {
                     let k = if chart_geom == GeometryType::Hyperbolic { -1.0 } else { 1.0 };
                     let scaled_pos = Point3::from_vec(current_pos.to_vec() * coord_scale);
@@ -267,7 +269,15 @@ impl ManifoldRaycaster {
                 }
             };
 
-            let next_pos = current_pos + mid_dir * actual_step;
+            let mut next_pos = current_pos + mid_dir * actual_step;
+            if matches!(chart_geom, GeometryType::Torus | GeometryType::KleinBottle) {
+                if let Some(chart_ref) = manifold.get_chart(current_chart) {
+                    let (wrapped_coord, wrapped_dir, _parity) = chart_ref
+                        .wrap_coordinates_with_parity(super::LocalCoordinate(next_pos), next_dir);
+                    next_pos = wrapped_coord.to_point();
+                    next_dir = wrapped_dir;
+                }
+            }
 
             // Check portal intersection against cached active portals for current chart
             let mut hit_portal: Option<(Point3<f32>, PortalId, f32)> = None;
@@ -427,6 +437,127 @@ pub struct PortalBenchmarkMetrics {
     pub segments_per_sec: f64,
 }
 
+/// A single particle advected along Riemannian geodesics across manifold charts and portals
+#[derive(Debug, Clone, Copy)]
+pub struct GeodesicParticle {
+    pub position: Point3<f32>,
+    pub velocity: Vector3<f32>,
+    pub chart: ChartId,
+    /// Orientation chirality parity: `+1` (right-handed) or `-1` (left-handed after Klein Bottle crossing)
+    pub chirality: i32,
+    pub portal_crossings: u32,
+}
+
+/// High-throughput particle swarm flowing along curved Christoffel geodesics through portals
+#[derive(Debug, Clone)]
+pub struct GeodesicParticleSwarm {
+    pub particles: Vec<GeodesicParticle>,
+    pub total_portal_crossings: u64,
+    pub total_chirality_flips: u64,
+}
+
+impl GeodesicParticleSwarm {
+    /// Initialize `count` particles distributed in a golden-spiral stream inside `chart`
+    pub fn new_golden_spiral(count: usize, chart: ChartId, speed: f32) -> Self {
+        let mut particles = Vec::with_capacity(count);
+        let golden_angle = std::f32::consts::PI * (3.0 - 5.0_f32.sqrt());
+        for i in 0..count {
+            let frac = (i as f32) / (count.max(1) as f32);
+            let r = 0.25 + 1.15 * frac.sqrt();
+            let theta = (i as f32) * golden_angle;
+            let pos = Point3::new(r * theta.cos(), 1.6 + 0.65 * r * theta.sin(), 2.5 - 5.0 * frac);
+            let vel = Vector3::new(-0.08 * theta.sin(), 0.05 * theta.cos(), -1.0).normalize() * speed;
+            particles.push(GeodesicParticle {
+                position: pos,
+                velocity: vel,
+                chart,
+                chirality: 1,
+                portal_crossings: 0,
+            });
+        }
+        Self {
+            particles,
+            total_portal_crossings: 0,
+            total_chirality_flips: 0,
+        }
+    }
+
+    /// Advect all particles by `dt` using 4th-order Runge-Kutta (RK4) Christoffel geodesic integration,
+    /// handling portal crossings and non-orientable Klein Bottle chirality inversions.
+    pub fn step_rk4(&mut self, manifold: &Manifold, dt: f32) {
+        let coord_scale = 0.08f32;
+        for p in &mut self.particles {
+            let geom = manifold
+                .get_chart(p.chart)
+                .map(|c| c.geometry())
+                .unwrap_or(GeometryType::Euclidean);
+            let k: f32 = match geom {
+                GeometryType::Hyperbolic => -1.0,
+                GeometryType::Spherical => 1.0,
+                _ => 0.0,
+            };
+
+            let prev_pos = p.position;
+            let speed = p.velocity.magnitude().max(1e-4);
+
+            if k.abs() > 1e-5 {
+                let accel = |x: Vector3<f32>, v: Vector3<f32>| -> Vector3<f32> {
+                    let sp = Point3::from_vec(x * coord_scale);
+                    let cs = super::metric::ChristoffelSymbols::from_conformal_point(sp, k);
+                    cs.geodesic_acceleration(sp.to_vec(), v) * coord_scale
+                };
+                let x0 = prev_pos.to_vec();
+                let v0 = p.velocity;
+
+                let k1_x = v0;
+                let k1_v = accel(x0, v0);
+                let k2_x = v0 + k1_v * (0.5 * dt);
+                let k2_v = accel(x0 + k1_x * (0.5 * dt), k2_x);
+                let k3_x = v0 + k2_v * (0.5 * dt);
+                let k3_v = accel(x0 + k2_x * (0.5 * dt), k3_x);
+                let k4_x = v0 + k3_v * dt;
+                let k4_v = accel(x0 + k3_x * dt, k4_x);
+
+                let new_x = x0 + (k1_x + k2_x * 2.0 + k3_x * 2.0 + k4_x) * (dt / 6.0);
+                let raw_v = v0 + (k1_v + k2_v * 2.0 + k3_v * 2.0 + k4_v) * (dt / 6.0);
+                p.position = Point3::from_vec(new_x);
+                if raw_v.magnitude2() > 1e-8 {
+                    p.velocity = raw_v.normalize() * speed;
+                }
+            } else {
+                p.position = prev_pos + p.velocity * dt;
+            }
+
+            // Check portal crossing first
+            let fwd = p.velocity / speed;
+            if let Some((new_pos, new_dir, target_chart, _portal_id)) =
+                manifold.check_portal_crossing(p.chart, prev_pos, p.position, fwd)
+            {
+                p.position = new_pos;
+                p.velocity = new_dir * speed;
+                p.chart = target_chart;
+                p.portal_crossings += 1;
+                self.total_portal_crossings += 1;
+            } else if let Some(chart_ref) = manifold.get_chart(p.chart) {
+                // Apply periodic / Klein Bottle boundary wrapping
+                if matches!(
+                    chart_ref.geometry(),
+                    GeometryType::Torus | GeometryType::KleinBottle
+                ) {
+                    let (wrapped_pos, wrapped_vel, parity) = chart_ref
+                        .wrap_coordinates_with_parity(super::LocalCoordinate(p.position), p.velocity);
+                    p.position = wrapped_pos.to_point();
+                    p.velocity = wrapped_vel;
+                    if parity < 0 {
+                        p.chirality = -p.chirality;
+                        self.total_chirality_flips += 1;
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ─── Unit Tests ────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -520,5 +651,20 @@ mod tests {
         assert_eq!(metrics.ray_count, 64);
         assert!(metrics.total_portal_jumps > 0);
         assert!(metrics.rays_per_sec > 100.0);
+    }
+
+    #[test]
+    fn test_geodesic_particle_swarm_portal_and_klein_chirality() {
+        let mut manifold = Manifold::new();
+        let chart_klein = manifold.add_chart(GeometryType::KleinBottle);
+        let mut swarm = GeodesicParticleSwarm::new_golden_spiral(32, chart_klein, 15.0);
+        // Place particle #0 near the z = -10.0 Klein boundary moving in -z
+        swarm.particles[0].position = Point3::new(3.0, 1.5, -9.5);
+        swarm.particles[0].velocity = Vector3::new(0.0, 0.0, -20.0);
+        swarm.step_rk4(&manifold, 0.1);
+        // Should have wrapped across z = -10 to +8.5 and flipped chirality from +1 to -1!
+        assert_eq!(swarm.particles[0].chirality, -1);
+        assert!((swarm.particles[0].position.x - (-3.0)).abs() < 1e-4);
+        assert!(swarm.total_chirality_flips >= 1);
     }
 }

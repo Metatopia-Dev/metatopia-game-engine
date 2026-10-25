@@ -122,6 +122,8 @@ fn main() {
             GeometryType::Euclidean => "Euclidean",
             GeometryType::Hyperbolic => "Hyperbolic",
             GeometryType::Spherical => "Spherical",
+            GeometryType::Torus => "Torus",
+            GeometryType::KleinBottle => "KleinBottle",
             GeometryType::Custom => "Custom",
         };
         println!("  ✓ New space geometry: {}\n", chart_name);

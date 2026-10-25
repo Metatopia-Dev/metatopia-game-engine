@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Metatopia Engine — Non-Euclidean Manifold &amp; Klein Bottle Portal Explorer (WebGL2 + WebAudio)</title>
+  <style>
+    :root {
+      --bg: #05070e;
+      --panel: rgba(8, 13, 26, 0.84);
+      --border: rgba(0, 225, 255, 0.28);
+      --cyan: #00e5ff;
+      --magenta: #ff2ad4;
+      --gold: #ffaa1d;
+      --text: #e6f2ff;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body, html {
+      width: 100%; height: 100%; overflow: hidden;
+      background: var(--bg); color: var(--text);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, monospace;
+    }
+    canvas {
+      display: block; width: 100vw; height: 100vh; cursor: grab;
+    }
+    canvas:active { cursor: grabbing; }
+    .hud {
+      position: fixed; top: 18px; left: 18px; z-index: 10;
+      background: var(--panel); border: 1px solid var(--border);
+      backdrop-filter: blur(12px); border-radius: 12px;
+      padding: 16px 20px; max-width: 440px;
+      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.65);
+    }
+    .hud h1 {
+      font-size: 14px; letter-spacing: 0.12em; text-transform: uppercase;
+      color: var(--cyan); margin-bottom: 6px;
+    }
+    .hud .sub {
+      font-size: 11px; color: rgba(230, 242, 255, 0.72); margin-bottom: 12px;
+      line-height: 1.45;
+    }
+    .row {
+      display: flex; align-items: center; justify-content: space-between;
+      margin: 7px 0; font-size: 12px;
+    }
+    .badge {
+      font-family: monospace; padding: 2px 8px; border-radius: 6px;
+      background: rgba(0, 229, 255, 0.14); color: var(--cyan);
+      border: 1px solid rgba(0, 229, 255, 0.35);
+    }
+    .btn-group {
+      display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px;
+    }
+    button {
+      background: rgba(255, 255, 255, 0.06); color: var(--text);
+      border: 1px solid rgba(0, 229, 255, 0.3); border-radius: 6px;
+      padding: 6px 10px; font-size: 11px; cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    button:hover, button.active {
+      background: rgba(0, 229, 255, 0.22); border-color: var(--cyan);
+      color: #fff;
+    }
+    button.audio-btn {
+      border-color: var(--magenta); color: #ffb8ee;
+    }
+    button.audio-btn.active {
+      background: rgba(255, 42, 212, 0.28); color: #fff;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="glcanvas"></canvas>
+  <div class="hud">
+    <h1>Metatopia Non-Euclidean Portal Engine</h1>
+    <div class="sub">
+      Real-Time WebGL2 Ray-Marched Riemannian Manifolds ($E^3, H^3, S^3, \mathbb{T}^3, \mathbb{K}^3$),
+      Christoffel Geodesics, Volumetric Geodesic Particle Swarm &amp; 128 BPM Synth
+    </div>
+    <div class="row"><span>Active Scene (Keys 1–5)</span><span class="badge" id="scene-label">1. Impossible Corridor</span></div>
+    <div class="row"><span>Portal Recursion Depth (P/O)</span><span class="badge" id="bounce-label">10 Bounces</span></div>
+    <div class="row"><span>Gaussian Curvature &kappa; (K/J)</span><span class="badge" id="curv-label">-0.92</span></div>
+    <div class="row"><span>Display Mode (H)</span><span class="badge" id="mode-label">PBR + Geodesic Swarm</span></div>
+    <div class="btn-group">
+      <button onclick="setScene(0)" id="btn-s0" class="active">1: E³/H³/S³ Loop</button>
+      <button onclick="setScene(1)" id="btn-s1">2: H³ {4,3,5} Lattice</button>
+      <button onclick="setScene(2)" id="btn-s2">3: Curvature Bridge</button>
+      <button onclick="setScene(3)" id="btn-s3">4: 16-Bounce Tunnel</button>
+      <button onclick="setScene(4)" id="btn-s4">5: Klein Bottle K³</button>
+    </div>
+    <div class="btn-group">
+      <button onclick="toggleAudio()" id="btn-audio" class="audio-btn">&#9835; Start 128 BPM Synth</button>
+      <button onclick="cycleHeatmap()">H: Cycle Heatmap</button>
+      <button onclick="toggleGeodesic()" id="btn-geo" class="active">G: Geodesics ON</button>
+    </div>
+  </div>
+
+<script>
+const canvas = document.getElementById('glcanvas');
+const gl = canvas.getContext('webgl2', { antialias: false });
+
+const vsSource = `#version 300 es
+precision highp float;
+const vec2 POS[6] = vec2[6](
+  vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0),
+  vec2(-1.0,  1.0), vec2(1.0, -1.0), vec2( 1.0, 1.0)
+);
+out vec2 v_uv;
+void main() {
+  v_uv = POS[gl_VertexID] * 0.5 + 0.5;
+  gl_Position = vec4(POS[gl_VertexID], 0.0, 1.0);
+}`;
+
+const fsSource = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 fragColor;
+
+uniform vec3 u_camPos;
+uniform vec3 u_camDir;
+uniform vec3 u_camUp;
+uniform vec2 u_res;
+uniform float u_time;
+uniform int u_scene;
+uniform int u_maxBounces;
+uniform float u_curvK;
+uniform float u_geodesicOn;
+uniform int u_heatmap;
+uniform vec3 u_audio; // kick, bass, arp
+
+mat2 rot2(float a) {
+  float c = cos(a), s = sin(a);
+  return mat2(c, -s, s, c);
+}
+
+vec3 christoffelAccel(vec3 p, vec3 v, float k) {
+  if (abs(k) < 1e-4) return vec3(0.0);
+  float r2 = min(dot(p, p), 0.92);
+  float denom = max(1.0 + k * r2, 0.18);
+  float scale = (-2.0 * k) / denom;
+  float vx = dot(p, v);
+  float vv = dot(v, v);
+  return scale * (2.0 * vx * v - vv * p);
+}
+
+float sdBoxFrame(vec3 p, vec3 b, float e) {
+  p = abs(p) - b;
+  vec3 q = abs(p + e) - e;
+  return min(min(
+    length(max(vec3(p.x, q.y, q.z), 0.0)) + min(max(p.x, max(q.y, q.z)), 0.0),
+    length(max(vec3(q.x, p.y, q.z), 0.0)) + min(max(q.x, max(p.y, q.z)), 0.0)),
+    length(max(vec3(q.x, q.y, p.z), 0.0)) + min(max(q.x, max(q.y, p.z)), 0.0)
+  );
+}
+
+float sdGeodesicSwarm(vec3 p, float t, float parity) {
+  float zCell = floor((p.z + 2.5) / 1.6);
+  float zMod = mod(p.z + 2.5, 1.6) - 0.8;
+  float phase = t * 2.8 + zCell * 1.15;
+  vec2 orb1 = vec2(parity * 1.05 * cos(phase), 1.5 + 0.85 * sin(phase * 1.3));
+  vec2 orb2 = vec2(-parity * 1.05 * sin(phase * 0.9), 1.5 + 0.85 * cos(phase * 1.1));
+  float d1 = length(vec3(p.xy - orb1, zMod)) - 0.075;
+  float d2 = length(vec3(p.xy - orb2, zMod)) - 0.075;
+  return min(d1, d2);
+}
+
+vec2 evalScene(vec3 p, int scene, float k, float t, float parity) {
+  float floorCeil = min(p.y + 0.5, 3.6 - p.y);
+  float walls = 2.5 - abs(p.x);
+  float dRoom = min(floorCeil, walls);
+
+  vec3 pr = p;
+  pr.x = abs(pr.x) - 1.95;
+  pr.z = mod(pr.z + 1.5, 3.0) - 1.5;
+  float pillars = length(pr.xz) - 0.22;
+  float dArch = max(dRoom, -pillars);
+  float matId = 1.0;
+  float dBest = dArch;
+
+  float frameZ = (scene == 3) ? -3.0 : -4.8;
+  float dFrame = sdBoxFrame(p - vec3(0.0, 1.5, frameZ), vec3(1.65, 2.35, 0.12), 0.11);
+  if (dFrame < dBest) { dBest = dFrame; matId = 3.0; }
+
+  if (scene == 1) {
+    vec3 q = p - vec3(0.0, 1.5, 0.0);
+    float period = 2.6 / (1.0 + 0.35 * abs(k));
+    q = mod(q + 0.5 * period, period) - 0.5 * period;
+    float dHon = sdBoxFrame(q, vec3(0.92), 0.09);
+    if (dHon < dBest) { dBest = dHon; matId = 2.0; }
+  } else if (scene == 4) {
+    vec3 q = p - vec3(0.0, 1.5, 0.0);
+    q.z = mod(q.z + 1.5, 3.0) - 1.5;
+    float twist = 0.65 * q.z * parity + t * 0.8;
+    vec2 rxy = rot2(twist) * q.xy;
+    float dR = length(vec2(rxy.x - 1.25 * parity, rxy.y)) - 0.15;
+    float dL = length(vec2(rxy.x + 1.25 * parity, rxy.y)) - 0.09;
+    float dK = min(dR, dL);
+    if (dK < dBest) { dBest = dK; matId = 5.0; }
+  } else {
+    vec3 c = p - vec3(0.0, 1.5 + 0.15 * sin(t * 1.8), 0.0);
+    c.xz = rot2(t * 0.7) * c.xz;
+    float dArt = sdBoxFrame(c, vec3(0.58), 0.07);
+    if (dArt < dBest && scene != 3) { dBest = dArt; matId = 2.0; }
+  }
+
+  float dSwarm = sdGeodesicSwarm(p, t, parity);
+  if (dSwarm < dBest) { dBest = dSwarm; matId = 4.0; }
+
+  return vec2(dBest, matId);
+}
+
+void main() {
+  vec2 aspect = vec2(u_res.x / max(u_res.y, 1.0), 1.0);
+  vec2 ndc = (v_uv * 2.0 - 1.0) * aspect;
+
+  vec3 f = normalize(u_camDir);
+  vec3 r = normalize(cross(f, normalize(u_camUp)));
+  vec3 u = cross(r, f);
+  vec3 rd = normalize(f * 1.25 + r * ndc.x + u * ndc.y);
+  vec3 ro = u_camPos;
+
+  float portalZSrc = (u_scene == 3) ? -3.0 : -4.8;
+  float portalZDst = (u_scene == 3) ?  2.8 :  4.5;
+
+  float totalT = 0.0;
+  int bounces = 0;
+  float parity = 1.0;
+  float ringGlow = 0.0;
+  bool hit = false;
+  float hitMat = 0.0;
+  int stepsUsed = 0;
+
+  for (int i = 0; i < 108; i++) {
+    stepsUsed = i;
+    vec2 res = evalScene(ro, u_scene, u_curvK, u_time, parity);
+    float d = res.x;
+
+    float dPortal = 1e5;
+    if (rd.z < -1e-4) {
+      float tp = (portalZSrc - ro.z) / rd.z;
+      if (tp > 0.0) {
+        vec3 hp = ro + rd * tp;
+        if (abs(hp.x) < 1.58 && abs(hp.y - 1.5) < 2.28) {
+          dPortal = tp;
+          float edge = max(abs(hp.x) / 1.58, abs(hp.y - 1.5) / 2.28);
+          if (edge > 0.88) ringGlow += 0.32 * smoothstep(0.88, 1.0, edge);
+        }
+      }
+    }
+
+    if (bounces < u_maxBounces && dPortal < d && dPortal < 0.85) {
+      ro = ro + rd * (dPortal + 0.015);
+      ro.z = portalZDst;
+      if (u_scene == 4) {
+        ro.x = -ro.x;
+        rd.x = -rd.x;
+        parity = -parity;
+      } else if (u_scene == 3) {
+        vec2 cxy = ro.xy - vec2(0.0, 1.5);
+        ro.xy = vec2(0.0, 1.5) + rot2(0.20) * cxy;
+        rd.xy = rot2(0.20) * rd.xy;
+      }
+      bounces++;
+      ringGlow += 0.22;
+      continue;
+    }
+
+    if (d < 0.0025) {
+      hit = true;
+      hitMat = res.y;
+      break;
+    }
+
+    float dt = clamp(d * 0.82, 0.01, 0.55);
+    if (u_geodesicOn > 0.5) {
+      vec3 a1 = christoffelAccel(ro * 0.14, rd, u_curvK * 0.25);
+      vec3 midP = ro + rd * (0.5 * dt);
+      vec3 midV = normalize(rd + a1 * (0.5 * dt));
+      vec3 a2 = christoffelAccel(midP * 0.14, midV, u_curvK * 0.25);
+      ro += midV * dt;
+      rd = normalize(rd + a2 * dt);
+    } else {
+      ro += rd * dt;
+    }
+    totalT += dt;
+    if (totalT > 42.0) break;
+  }
+
+  vec3 col = vec3(0.02, 0.04, 0.09);
+  if (u_heatmap == 1) {
+    float s = float(stepsUsed) / 108.0;
+    col = mix(vec3(0.05, 0.2, 0.9), vec3(1.0, 0.15, 0.4), s);
+  } else if (u_heatmap == 2) {
+    float b = float(bounces) / max(float(u_maxBounces), 1.0);
+    col = 0.5 + 0.5 * cos(6.28318 * (b + vec3(0.0, 0.33, 0.67)));
+  } else if (hit) {
+    vec2 e = vec2(0.003, 0.0);
+    vec3 n = normalize(vec3(
+      evalScene(ro + e.xyy, u_scene, u_curvK, u_time, parity).x - evalScene(ro - e.xyy, u_scene, u_curvK, u_time, parity).x,
+      evalScene(ro + e.yxy, u_scene, u_curvK, u_time, parity).x - evalScene(ro - e.yxy, u_scene, u_curvK, u_time, parity).x,
+      evalScene(ro + e.yyx, u_scene, u_curvK, u_time, parity).x - evalScene(ro - e.yyx, u_scene, u_curvK, u_time, parity).x
+    ));
+    vec3 l = normalize(vec3(0.5, 0.8, 0.4));
+    float diff = max(dot(n, l), 0.08);
+    vec3 base = vec3(0.12, 0.22, 0.38);
+    if (hitMat == 1.0) {
+      float g = smoothstep(0.06, 0.0, abs(fract(ro.x * 1.5) - 0.5)) + smoothstep(0.06, 0.0, abs(fract(ro.z * 1.5) - 0.5));
+      base += vec3(0.0, 0.85, 1.0) * clamp(g, 0.0, 1.0) * (0.45 + 0.55 * u_audio.x);
+    } else if (hitMat == 2.0) {
+      base = vec3(0.85, 0.2, 0.95) * (0.7 + 0.5 * u_audio.z);
+    } else if (hitMat == 3.0) {
+      base = vec3(0.0, 1.1, 1.35) + vec3(1.1, 0.15, 0.8) * float(bounces & 1);
+    } else if (hitMat == 4.0) {
+      base = (parity > 0.0) ? vec3(0.1, 1.8, 2.3) : vec3(2.3, 0.3, 1.7);
+    } else if (hitMat == 5.0) {
+      base = (ro.x * parity > 0.0) ? vec3(1.4, 0.85, 0.15) : vec3(0.1, 1.15, 1.55);
+    }
+    col = base * diff * exp(-0.032 * totalT);
+  }
+
+  vec3 ringCol = (parity < 0.0) ? vec3(1.0, 0.65, 0.1) : vec3(0.0, 0.9, 1.0);
+  col += ringCol * ringGlow * (0.65 + 0.45 * u_audio.x);
+  col = col / (1.0 + col);
+  col = pow(col, vec3(1.0 / 2.2));
+  fragColor = vec4(col, 1.0);
+}`;
+
+function compileShader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    console.error(gl.getShaderInfoLog(s));
+  }
+  return s;
+}
+
+const prog = gl.createProgram();
+gl.attachShader(prog, compileShader(gl.VERTEX_SHADER, vsSource));
+gl.attachShader(prog, compileShader(gl.FRAGMENT_SHADER, fsSource));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+
+let state = {
+  scene: 0,
+  maxBounces: 10,
+  curvK: -0.92,
+  geodesicOn: 1.0,
+  heatmap: 0,
+  camPos: [0.0, 1.6, 2.5],
+  yaw: -Math.PI / 2,
+  pitch: 0.0,
+  dragging: false,
+  keys: {},
+  audioCtx: null,
+  audioPlaying: false
+};
+
+const sceneNames = [
+  "1. Impossible Corridor (E³/H³/S³)",
+  "2. H³ {4,3,5} Honeycomb Lattice",
+  "3. Multi-Chart Curvature Bridge",
+  "4. 16-Bounce Infinity Tunnel",
+  "5. Non-Orientable Klein Bottle K³"
+];
+const modeNames = ["PBR + Geodesic Swarm", "Step Cost Heatmap", "Portal Depth Spectrum"];
+
+function updateHUD() {
+  document.getElementById('scene-label').textContent = sceneNames[state.scene];
+  document.getElementById('bounce-label').textContent = state.maxBounces + " Bounces";
+  document.getElementById('curv-label').textContent = state.curvK.toFixed(2);
+  document.getElementById('mode-label').textContent = modeNames[state.heatmap];
+  for (let i = 0; i < 5; i++) {
+    document.getElementById('btn-s' + i).classList.toggle('active', state.scene === i);
+  }
+  document.getElementById('btn-geo').classList.toggle('active', state.geodesicOn > 0.5);
+  document.getElementById('btn-geo').textContent = state.geodesicOn > 0.5 ? "G: Geodesics ON" : "G: Geodesics OFF";
+}
+
+window.setScene = function(s) {
+  state.scene = s;
+  if (s === 3) state.maxBounces = 16;
+  if (s === 4) state.maxBounces = 14;
+  updateHUD();
+};
+window.cycleHeatmap = function() {
+  state.heatmap = (state.heatmap + 1) % 3;
+  updateHUD();
+};
+window.toggleGeodesic = function() {
+  state.geodesicOn = state.geodesicOn > 0.5 ? 0.0 : 1.0;
+  updateHUD();
+};
+
+// Live 128 BPM WebAudio Synthesizer ("Geodesic Horizon")
+window.toggleAudio = function() {
+  const btn = document.getElementById('btn-audio');
+  if (!state.audioCtx) {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    state.audioCtx = new AudioContext();
+    state.audioPlaying = true;
+    btn.classList.add('active');
+    btn.textContent = "♫ 128 BPM Synth LIVE";
+    startSequencer();
+  } else if (state.audioCtx.state === 'suspended') {
+    state.audioCtx.resume();
+    state.audioPlaying = true;
+    btn.classList.add('active');
+    btn.textContent = "♫ 128 BPM Synth LIVE";
+  } else {
+    state.audioCtx.suspend();
+    state.audioPlaying = false;
+    btn.classList.remove('active');
+    btn.textContent = "♫ Start 128 BPM Synth";
+  }
+};
+
+function startSequencer() {
+  const ctx = state.audioCtx;
+  const arpNotes = [349.23, 523.25, 415.30, 392.00, 349.23, 523.25, 622.25, 523.25,
+                    277.18, 415.30, 698.46, 622.25, 261.63, 392.00, 466.16, 523.25];
+  let step16 = 0;
+  const stepDur = (60.0 / 128.0) * 0.25;
+  setInterval(() => {
+    if (!state.audioPlaying) return;
+    const now = ctx.currentTime;
+    if (step16 % 4 === 0) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.frequency.setValueAtTime(150, now);
+      osc.frequency.exponentialRampToValueAtTime(43.65, now + 0.11);
+      gain.gain.setValueAtTime(0.45, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.32);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.33);
+    }
+    const arpOsc = ctx.createOscillator();
+    const arpGain = ctx.createGain();
+    arpOsc.type = 'sawtooth';
+    arpOsc.frequency.setValueAtTime(arpNotes[step16 % 16], now);
+    arpGain.gain.setValueAtTime(0.08, now);
+    arpGain.gain.exponentialRampToValueAtTime(0.001, now + stepDur * 0.85);
+    arpOsc.connect(arpGain).connect(ctx.destination);
+    arpOsc.start(now);
+    arpOsc.stop(now + stepDur * 0.9);
+    step16++;
+  }, stepDur * 1000);
+}
+
+window.addEventListener('keydown', e => {
+  state.keys[e.code] = true;
+  if (e.code === 'Digit1') setScene(0);
+  if (e.code === 'Digit2') setScene(1);
+  if (e.code === 'Digit3') setScene(2);
+  if (e.code === 'Digit4') setScene(3);
+  if (e.code === 'Digit5') setScene(4);
+  if (e.code === 'KeyP') { state.maxBounces = Math.min(16, state.maxBounces + 1); updateHUD(); }
+  if (e.code === 'KeyO') { state.maxBounces = Math.max(0, state.maxBounces - 1); updateHUD(); }
+  if (e.code === 'KeyK') { state.curvK = Math.min(2.0, state.curvK + 0.12); updateHUD(); }
+  if (e.code === 'KeyJ') { state.curvK = Math.max(-2.0, state.curvK - 0.12); updateHUD(); }
+  if (e.code === 'KeyG') toggleGeodesic();
+  if (e.code === 'KeyH') cycleHeatmap();
+});
+window.addEventListener('keyup', e => { state.keys[e.code] = false; });
+canvas.addEventListener('mousedown', () => { state.dragging = true; });
+window.addEventListener('mouseup', () => { state.dragging = false; });
+window.addEventListener('mousemove', e => {
+  if (!state.dragging) return;
+  state.yaw += e.movementX * 0.004;
+  state.pitch = Math.max(-1.4, Math.min(1.4, state.pitch - e.movementY * 0.004));
+});
+
+let lastT = performance.now();
+function frame(nowMs) {
+  const dt = Math.min(0.1, (nowMs - lastT) * 0.001);
+  lastT = nowMs;
+  const t = nowMs * 0.001;
+
+  if (canvas.width !== window.innerWidth || canvas.height !== window.innerHeight) {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    gl.viewport(0, 0, canvas.width, canvas.height);
+  }
+
+  state.camPos[2] -= 2.6 * dt;
+  const portalZSrc = (state.scene === 3) ? -3.0 : -4.8;
+  const portalZDst = (state.scene === 3) ?  2.8 :  4.5;
+  if (state.camPos[2] < portalZSrc) {
+    state.camPos[2] = portalZDst;
+    if (state.scene === 4) state.camPos[0] = -state.camPos[0];
+  }
+
+  const beat = (t / (60.0 / 128.0)) % 1.0;
+  const kickEnv = Math.exp(-beat * 6.0);
+  const arpEnv = Math.exp(-((beat * 4.0) % 1.0) * 7.5);
+  const bassEnv = 1.0 - 0.7 * kickEnv;
+
+  const dir = [
+    Math.cos(state.yaw) * Math.cos(state.pitch),
+    Math.sin(state.pitch),
+    Math.sin(state.yaw) * Math.cos(state.pitch)
+  ];
+  const roll = 0.07 * Math.sin(t * 1.675);
+
+  gl.uniform3fv(gl.getUniformLocation(prog, 'u_camPos'), state.camPos);
+  gl.uniform3fv(gl.getUniformLocation(prog, 'u_camDir'), dir);
+  gl.uniform3f(gl.getUniformLocation(prog, 'u_camUp'), Math.sin(roll), Math.cos(roll), 0.0);
+  gl.uniform2f(gl.getUniformLocation(prog, 'u_res'), canvas.width, canvas.height);
+  gl.uniform1f(gl.getUniformLocation(prog, 'u_time'), t);
+  gl.uniform1i(gl.getUniformLocation(prog, 'u_scene'), state.scene);
+  gl.uniform1i(gl.getUniformLocation(prog, 'u_maxBounces'), state.maxBounces);
+  gl.uniform1f(gl.getUniformLocation(prog, 'u_curvK'), state.curvK);
+  gl.uniform1f(gl.getUniformLocation(prog, 'u_geodesicOn'), state.geodesicOn);
+  gl.uniform1i(gl.getUniformLocation(prog, 'u_heatmap'), state.heatmap);
+  gl.uniform3f(gl.getUniformLocation(prog, 'u_audio'), kickEnv, bassEnv, arpEnv);
+
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

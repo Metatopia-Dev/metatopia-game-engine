@@ -181,28 +181,31 @@ cargo run --release --example metatopia_sandbox
 
 ---
 
-### 9. Non-Euclidean Ray-Marched Portal & Hyperbolic $\mathbb{H}^3$ Benchmark (`hyperbolic_portal_benchmark`)
-Real-time WGSL ray-marched Riemannian manifold and multi-bounce portal benchmark featuring continuous curvature $K \in [-1.35, +1.35]$, Poincaré ball gyrometric transport, and a built-in 9-movement 128 BPM procedural stereo techno synthesizer (*"GEODESIC HORIZON"*).
+### 9. Non-Euclidean Ray-Marched Portal, Klein Bottle $\mathbb{K}^3$ & Hyperbolic $\mathbb{H}^3$ Benchmark (`hyperbolic_portal_benchmark`)
+Real-time WGSL ray-marched Riemannian manifold and multi-bounce portal benchmark featuring continuous curvature $K \in [-1.35, +1.35]$, exact 3D Poincaré ball gyrometric geodesics (`Metric::gyrometric_geodesic_point_3d`), 4th-order Runge-Kutta (`RK4`) Christoffel geodesic integration, volumetric geodesic particle streams, and a built-in 9-movement 128 BPM procedural stereo techno synthesizer (*"GEODESIC HORIZON"*).
 
-- **4 Non-Euclidean Scenes**:
+- **5 Non-Euclidean Scenes**:
   1. **Impossible Non-Euclidean Corridor & 4-Chart Loop**: Seamless multi-chart portal loop (`Chart 0 -> 1 -> 2 -> 3 -> 0`) with local tangent-space Möbius transport
   2. **Hyperbolic $\mathbb{H}^3$ `{4,3,5}` Conformal Honeycomb Cathedral**: $C^1$-continuous hyperbolic space folding with conformal metric scaling $\lambda(x) = \frac{2}{1 + K\|x\|^2}$
   3. **Multi-Chart Curvature Bridge ($\mathbb{E}^3 \to \mathbb{H}^3 \to \mathbb{S}^3$)**: Continuous transition from flat Euclidean space to negatively curved hyperbolic space and positively curved spherical $\mathbb{S}^3$ star-vaults
   4. **16-Bounce Recursive Infinity Portal Tunnel**: High-depth recursive portal mirror stress test with exponential LOD border attenuation and full-3D neon spectrum overdrive
-- **3 Execution Modes**: Interactive 60 FPS WGPU Explorer, Headless CPU+GPU Benchmark Suite (`--bench`), and 3-Minute 128 BPM Audiovisual Videoclip Recorder (`--record <output.mp4>`)
+  5. **Non-Orientable Klein Bottle $\mathbb{K}^3$ & $\mathbb{T}^3$ Torus Chiral Labyrinth**: Orientation-reversing portal identification ($\det J = -1$, $x \mapsto -x$) that flips handedness (Electric Cyan $\leftrightarrow$ Solar Gold chiral double-helix pillars) on every portal bounce
+- **Volumetric Geodesic Particle Swarm (`GeodesicParticleSwarm`)**: 1,024 CPU RK4-advected particles (`28.6M particle-steps/s`) paired with GPU volumetric geodesic orb trails (`sd_geodesic_swarm`)
+- **Zero-Install WebGL2 + WebAudio Visualizer**: Open [`web_simulator/non_euclidean_portal.html`](web_simulator/non_euclidean_portal.html) directly in any modern browser
+- **3 Native Execution Modes**: Interactive 60+ FPS WGPU Explorer, Headless CPU+GPU Benchmark Suite (`--bench`), and 3-Minute 128 BPM Audiovisual Videoclip Recorder (`--record <output.mp4>`)
 
 ```bash
-# Interactive 60 FPS Explorer
+# Interactive 60+ FPS Explorer
 cargo run --release --example hyperbolic_portal_benchmark
 
-# Headless CPU + GPU Geodesic & Multi-Bounce Benchmark Suite
+# Headless CPU + GPU Geodesic, Klein Bottle & Multi-Bounce Benchmark Suite
 cargo run --release --example hyperbolic_portal_benchmark -- --bench
 
 # Record Full 3:00 (96-Bar @ 128 BPM) Techno Videoclip (Original Master + <20 MB Compressed)
 cargo run --release --example hyperbolic_portal_benchmark -- --record hyperbolic_portal_gameplay.mp4
 ```
 
-**Controls**: WASD + Mouse Fly · 1–4 Switch Scene · Q/E Adjust Curvature $K$ · [ / ] Portal Bounce Depth (0–16) · H Cycle PBR / Step-Cost Heatmap / Full-3D Neon Overdrive · Space Toggle Auto-Tour
+**Controls**: WASD + Mouse Fly · 1–5 Switch Scene (`5` = Klein Bottle $\mathbb{K}^3$) · K/J Adjust Curvature $\kappa$ · P/O Portal Bounce Depth (0–16) · G Toggle Geodesic Bending · H Cycle PBR / Step-Cost Heatmap / Full-3D Neon Overdrive · Tab Toggle Auto-Tour
 
 ---
 
@@ -452,15 +455,17 @@ let config = EngineConfig {
 ### Geometry Types
 | Type | Curvature | Behavior |
 |---|---|---|
-| `Euclidean` | κ = 0 | Standard flat geometry |
-| `Spherical` | κ > 0 | Convergent geodesics, objects pulled inward |
-| `Hyperbolic` | κ < 0 | Divergent geodesics, objects pushed outward |
-| `Custom` | User-defined | Custom metric tensor |
+| `Euclidean` | $\kappa = 0$ | Standard flat geometry |
+| `Spherical` | $\kappa > 0$ | Convergent geodesics, objects pulled inward |
+| `Hyperbolic` | $\kappa < 0$ | Divergent geodesics, exact 3D Poincaré & Beltrami-Klein gyrometric geodesics |
+| `Torus` | $\kappa = 0$ (compact $\mathbb{T}^3$) | Periodic boundary wrapping across $(x, y, z) \in [-L/2, L/2]^3$ |
+| `KleinBottle` | $\kappa = 0$ (non-orientable $\mathbb{K}^3$) | Orientation-reversing boundary ($z \pm L/2 \implies x \mapsto -x$, $\det J = -1$) |
+| `Custom` | User-defined | Custom metric tensor & 4th-order Runge-Kutta (`RK4`) Christoffel geodesic solver |
 
 ## 🤝 Contributing
 
 We welcome contributions! Areas of interest:
-- Additional geometry types (Torus, Klein bottle)
+- Higher-genus hyperbolic surfaces ($\Sigma_g$) and Seifert fibered spaces
 - Performance optimizations
 - More example games and demos
 - Documentation improvements
@@ -494,7 +499,7 @@ This project is licensed under the MIT License — see the LICENSE file for deta
 
 - [x] Procedural audio with geometry-aware drones
 - [x] PBR rendering with Cook-Torrance BRDF
-- [x] Ray marching (Mandelbulb fractal explorer)
+- [x] Ray marching (Mandelbulb fractal explorer & 16-bounce Non-Euclidean portals)
 - [x] Non-deterministic physics (quantum kicks)
 - [x] Multiple themed environments per demo
 - [x] Zero-boilerplate quickstart system
@@ -502,12 +507,14 @@ This project is licensed under the MIT License — see the LICENSE file for deta
 - [x] Audio engine integration in quickstart
 - [x] Scoring system with combo mechanics
 - [x] Mouse delta tracking + FPS crosshair
-- [x] 80+ automated tests
+- [x] 103+ automated unit tests
+- [x] Torus ($\mathbb{T}^3$) and Non-Orientable Klein Bottle ($\mathbb{K}^3$) manifolds with chirality inversion
+- [x] Exact 3D Poincaré Ball gyrometric geodesics & RK4 Christoffel ODE integration
+- [x] 3D Geodesic Particle Swarm (`GeodesicParticleSwarm`) + volumetric GPU particle trails
+- [x] Standalone zero-install WebGL2 + WebAudio browser visualizer (`web_simulator/non_euclidean_portal.html`)
 - [ ] Dynamic mesh updates (instanced drawing)
 - [ ] Networked multiplayer support
-- [ ] More geometry types (Torus, Klein bottle)
 - [ ] Visual scripting for portal creation
-- [ ] Performance optimizations for mobile/web
 - [ ] Integration plugins for other engines
 
 ---
