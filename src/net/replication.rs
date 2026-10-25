@@ -71,18 +71,49 @@ impl SnapshotBuffer {
             let s0 = &self.snapshots[i0];
             let s1 = &self.snapshots[i1];
 
-            let duration = (s1.timestamp_ms - s0.timestamp_ms).max(1) as f32;
+            let duration_ms = (s1.timestamp_ms - s0.timestamp_ms).max(1);
+            let duration = duration_ms as f32;
+            let dt_sec = duration * 0.001;
             let elapsed = (render_time_ms - s0.timestamp_ms) as f32;
             let t = (elapsed / duration).clamp(0.0, 1.0);
 
             let mut interpolated = HashMap::new();
             for (id, e0) in &s0.entities {
                 if let Some(e1) = s1.entities.get(id) {
-                    let pos = [
-                        e0.pos[0] + (e1.pos[0] - e0.pos[0]) * t,
-                        e0.pos[1] + (e1.pos[1] - e0.pos[1]) * t,
-                        e0.pos[2] + (e1.pos[2] - e0.pos[2]) * t,
-                    ];
+                    // Portal-aware interpolation: if the entity traversed a portal (e0.chart != e1.chart),
+                    // extrapolate in the pre-portal chart for t < 0.5 and in the post-portal chart for t >= 0.5
+                    // so remote entities never rubber-band backward across the room!
+                    let (pos, active_chart) = if e0.chart != e1.chart {
+                        if t < 0.5 {
+                            (
+                                [
+                                    e0.pos[0] + e0.vel[0] * (t * dt_sec),
+                                    e0.pos[1] + e0.vel[1] * (t * dt_sec),
+                                    e0.pos[2] + e0.vel[2] * (t * dt_sec),
+                                ],
+                                e0.chart,
+                            )
+                        } else {
+                            let rem = (1.0 - t) * dt_sec;
+                            (
+                                [
+                                    e1.pos[0] - e1.vel[0] * rem,
+                                    e1.pos[1] - e1.vel[1] * rem,
+                                    e1.pos[2] - e1.vel[2] * rem,
+                                ],
+                                e1.chart,
+                            )
+                        }
+                    } else {
+                        (
+                            [
+                                e0.pos[0] + (e1.pos[0] - e0.pos[0]) * t,
+                                e0.pos[1] + (e1.pos[1] - e0.pos[1]) * t,
+                                e0.pos[2] + (e1.pos[2] - e0.pos[2]) * t,
+                            ],
+                            e1.chart,
+                        )
+                    };
                     let vel = [
                         e0.vel[0] + (e1.vel[0] - e0.vel[0]) * t,
                         e0.vel[1] + (e1.vel[1] - e0.vel[1]) * t,
@@ -99,7 +130,7 @@ impl SnapshotBuffer {
                         vel,
                         yaw,
                         pitch,
-                        chart: e1.chart,
+                        chart: active_chart,
                         health,
                     });
                 } else {
@@ -212,6 +243,51 @@ mod tests {
         assert!((entity.pos[1] - 10.0).abs() < 1e-4);
         assert!((entity.pos[2] - 15.0).abs() < 1e-4);
         assert!((entity.health - 75.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_portal_crossing_snapshot_no_rubber_banding() {
+        let mut buffer = SnapshotBuffer::new(50, 10);
+
+        // Tick 1 (1000ms): Entity approaches portal at z = -4.7 in Chart 0 moving at vz = -4.0 m/s
+        let mut e0_map = HashMap::new();
+        e0_map.insert(7, EntityState {
+            id: 7,
+            owner_id: 1,
+            pos: [0.0, 1.6, -4.7],
+            vel: [0.0, 0.0, -4.0],
+            yaw: 0.0,
+            pitch: 0.0,
+            chart: 0,
+            health: 100.0,
+        });
+        buffer.push(Snapshot { tick: 1, timestamp_ms: 1000, entities: e0_map });
+
+        // Tick 2 (1100ms): Entity exited portal at z = +4.4 in Chart 1 moving at vz = -4.0 m/s
+        let mut e1_map = HashMap::new();
+        e1_map.insert(7, EntityState {
+            id: 7,
+            owner_id: 1,
+            pos: [0.0, 1.6, 4.4],
+            vel: [0.0, 0.0, -4.0],
+            yaw: 0.0,
+            pitch: 0.0,
+            chart: 1,
+            health: 100.0,
+        });
+        buffer.push(Snapshot { tick: 2, timestamp_ms: 1100, entities: e1_map });
+
+        // Sample before midpoint (1025ms -> t = 0.25): must stay in Chart 0 near z = -4.8, NOT rubber-band to z = -2.4!
+        let s_pre = buffer.sample(1025).unwrap();
+        let e_pre = s_pre.get(&7).unwrap();
+        assert_eq!(e_pre.chart, 0);
+        assert!(e_pre.pos[2] < -4.7, "Expected z < -4.7 in Chart 0, got {}", e_pre.pos[2]);
+
+        // Sample after midpoint (1075ms -> t = 0.75): must be in Chart 1 near z = +4.5
+        let s_post = buffer.sample(1075).unwrap();
+        let e_post = s_post.get(&7).unwrap();
+        assert_eq!(e_post.chart, 1);
+        assert!(e_post.pos[2] > 4.4, "Expected z > 4.4 in Chart 1, got {}", e_post.pos[2]);
     }
 
     #[test]

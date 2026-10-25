@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>METATOPIA SHOWCASE HUB — General Relativity, Wormholes & Non-Euclidean Portals</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body, html {
+    width: 100%; height: 100%; overflow: hidden;
+    background: #04060a; color: #e2f1ff;
+    font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+  }
+  #glcanvas { width: 100vw; height: 100vh; display: block; }
+  .top-nav {
+    position: fixed; top: 14px; left: 16px; right: 16px;
+    display: flex; align-items: center; justify-content: space-between;
+    background: rgba(6, 10, 18, 0.84);
+    border: 1px solid rgba(0, 242, 254, 0.35);
+    backdrop-filter: blur(12px);
+    border-radius: 10px; padding: 10px 16px; z-index: 20;
+  }
+  .brand { font-size: 14px; font-weight: 800; color: #00f2fe; letter-spacing: 1px; }
+  .tabs { display: flex; gap: 8px; flex-wrap: wrap; }
+  .btn {
+    padding: 7px 12px; font-size: 11px; font-family: inherit; font-weight: 700;
+    color: #c8e6ff; background: rgba(0, 242, 254, 0.08);
+    border: 1px solid rgba(0, 242, 254, 0.3); border-radius: 6px;
+    cursor: pointer; text-decoration: none; transition: 0.15s;
+  }
+  .btn:hover, .btn.active {
+    background: rgba(0, 242, 254, 0.25); color: #fff; border-color: #00f2fe;
+    box-shadow: 0 0 12px rgba(0, 242, 254, 0.35);
+  }
+  .hud-card {
+    position: fixed; bottom: 18px; left: 18px; width: 390px;
+    background: rgba(6, 10, 18, 0.84);
+    border: 1px solid rgba(255, 0, 127, 0.38);
+    backdrop-filter: blur(12px);
+    border-radius: 10px; padding: 14px 16px; z-index: 20;
+  }
+  .hud-card h2 { font-size: 13px; color: #ff55b8; margin-bottom: 6px; }
+  .hud-card p { font-size: 11px; color: #9ab8d4; line-height: 1.45; margin-bottom: 8px; }
+  .control-row {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 11px; margin-top: 6px;
+  }
+  .control-row input[type=range] { width: 190px; accent-color: #00f2fe; }
+  .telemetry {
+    margin-top: 10px; padding-top: 8px;
+    border-top: 1px solid rgba(255,255,255,0.1);
+    font-size: 11px; color: #7ef9ff;
+  }
+</style>
+</head>
+<body>
+<canvas id="glcanvas"></canvas>
+
+<div class="top-nav">
+  <div class="brand">METATOPIA ENGINE // UNIFIED WEB SHOWCASE HUB</div>
+  <div class="tabs">
+    <button class="btn active" id="tab-bh" onclick="setMode(0)">1. SCHWARZSCHILD BLACK HOLE (GR)</button>
+    <button class="btn" id="tab-wh" onclick="setMode(1)">2. MORRIS-THORNE WORMHOLE</button>
+    <button class="btn" id="tab-pz" onclick="setMode(2)">3. CHRONO-PORTAL PUZZLE</button>
+    <a class="btn" href="non_euclidean_portal.html">4. 5-SCENE HYPERBOLIC / KLEIN EXPLORER ↗</a>
+    <a class="btn" href="index.html">5. SILICON PHOTONICS LAB ↗</a>
+    <button class="btn" id="audio-btn" onclick="toggleAudio()">🔊 128 BPM SYNTH</button>
+  </div>
+</div>
+
+<div class="hud-card">
+  <h2 id="mode-title">TRACK 1: SCHWARZSCHILD NULL GEODESIC LENSING</h2>
+  <p id="mode-desc">
+    Real-time 4D Lorentzian null geodesic integration (ds² = -(1 - r_s/r)c²dt² + (1 - r_s/r)⁻¹dr² + r²dΩ²) with photon sphere at r_ph = 1.5 r_s and relativistic Doppler beaming δ⁴.
+  </p>
+  <div class="control-row">
+    <span>Schwarzschild Radius (r_s) / Throat (b₀)</span>
+    <input id="rs-slider" type="range" min="0.3" max="2.2" step="0.05" value="1.0" />
+  </div>
+  <div class="control-row">
+    <span>Accretion / Manifold Curvature (κ)</span>
+    <input id="k-slider" type="range" min="-2.0" max="2.0" step="0.05" value="-1.0" />
+  </div>
+  <div class="telemetry" id="telemetry-box">
+    r_s = 1.00 | r_ph = 1.50 | ISCO = 3.00 | RK4 Steps = 96
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('glcanvas');
+const gl = canvas.getContext('webgl2');
+let currentMode = 0;
+let startTime = performance.now();
+let yaw = 0.0, pitch = 0.18, dragging = false, lastX = 0, lastY = 0;
+
+window.addEventListener('resize', () => {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  gl.viewport(0, 0, canvas.width, canvas.height);
+});
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+canvas.addEventListener('mousedown', e => { dragging = true; lastX = e.clientX; lastY = e.clientY; });
+window.addEventListener('mouseup', () => dragging = false);
+window.addEventListener('mousemove', e => {
+  if (!dragging) return;
+  yaw += (e.clientX - lastX) * 0.006;
+  pitch = Math.max(-1.2, Math.min(1.2, pitch + (e.clientY - lastY) * 0.006));
+  lastX = e.clientX; lastY = e.clientY;
+});
+
+function setMode(m) {
+  currentMode = m;
+  document.getElementById('tab-bh').classList.toggle('active', m === 0);
+  document.getElementById('tab-wh').classList.toggle('active', m === 1);
+  document.getElementById('tab-pz').classList.toggle('active', m === 2);
+  const titles = [
+    'TRACK 1: SCHWARZSCHILD NULL GEODESIC LENSING',
+    'TRACK 1B: MORRIS-THORNE TRAVERSABLE WORMHOLE',
+    'TRACK 2: CHRONO-PORTAL 5-CHAMBER PUZZLE ARENA'
+  ];
+  const descs = [
+    'Real-time 4D Lorentzian null geodesic integration with photon sphere at r_ph = 1.5 r_s, ISCO at 3.0 r_s, and relativistic Doppler beaming δ⁴.',
+    'Ellis / Morris-Thorne wormhole ds² = -c²dt² + dl² + (b₀² + l²)dΩ² connecting Chart 0 (Cyan/Gold Universe) through throat l = 0 to Chart 1 (Magenta/Emerald Universe).',
+    'Interactive Non-Euclidean laser routing, scale-changing portal apertures, and Klein Bottle K³ chirality inversion.'
+  ];
+  document.getElementById('mode-title').textContent = titles[m];
+  document.getElementById('mode-desc').textContent = descs[m];
+}
+
+function applyHashRoute() {
+  const h = (window.location.hash || '').toLowerCase();
+  if (h === '#relativity') setMode(0);
+  else if (h === '#wormhole') setMode(1);
+  else if (h === '#puzzle') setMode(2);
+}
+window.addEventListener('hashchange', applyHashRoute);
+applyHashRoute();
+
+const vsSrc = `#version 300 es
+in vec2 a_pos;
+out vec2 v_uv;
+void main() {
+  v_uv = a_pos;
+  gl_Position = vec4(a_pos, 0.0, 1.0);
+}`;
+
+const fsSrc = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 fragColor;
+uniform vec2 u_res;
+uniform float u_time;
+uniform float u_rs;
+uniform float u_k;
+uniform int u_mode;
+uniform vec2 u_rot;
+
+mat3 rotY(float a) {
+  float c = cos(a), s = sin(a);
+  return mat3(c, 0.0, -s, 0.0, 1.0, 0.0, s, 0.0, c);
+}
+mat3 rotX(float a) {
+  float c = cos(a), s = sin(a);
+  return mat3(1.0, 0.0, 0.0, 0.0, c, -s, 0.0, s, c);
+}
+
+vec3 starfield(vec3 dir, int chart) {
+  vec3 p = normalize(dir);
+  float grid = pow(abs(sin(p.x * 24.0) * sin(p.y * 24.0) * sin(p.z * 24.0)), 18.0);
+  float neb = 0.5 + 0.5 * sin(p.x * 5.0 + p.y * 3.0 + u_time * 0.4);
+  if (chart == 0) {
+    return vec3(0.02, 0.06, 0.14) + neb * vec3(0.0, 0.35, 0.55) + grid * vec3(0.7, 0.95, 1.0);
+  } else {
+    return vec3(0.12, 0.02, 0.14) + neb * vec3(0.55, 0.05, 0.40) + grid * vec3(1.0, 0.75, 0.3);
+  }
+}
+
+void main() {
+  vec2 uv = (v_uv * u_res) / min(u_res.x, u_res.y);
+  mat3 camRot = rotY(u_rot.x) * rotX(u_rot.y);
+  vec3 ro = camRot * vec3(0.0, 0.6, 7.5);
+  vec3 rd = normalize(camRot * normalize(vec3(uv, -1.6)));
+
+  vec3 col = vec3(0.0);
+
+  if (u_mode == 0) {
+    // Schwarzschild Black Hole Null Geodesic Binet Integration
+    vec3 pos = ro;
+    vec3 vel = rd;
+    bool captured = false;
+    vec3 diskAccum = vec3(0.0);
+
+    for (int i = 0; i < 96; i++) {
+      float r = length(pos);
+      if (r <= u_rs) { captured = true; break; }
+      vec3 hVec = cross(pos, vel);
+      float h2 = dot(hVec, hVec);
+      vec3 acc = -1.5 * u_rs * h2 * pos / pow(max(r, 0.001), 5.0);
+      float prevY = pos.y;
+      float dt = clamp(0.06 * r, 0.02, 0.18);
+      vel = normalize(vel + acc * dt);
+      pos += vel * dt;
+
+      // Relativistic Accretion Disk Crossing (ISCO = 3 r_s to 6.5 r_s)
+      if (prevY * pos.y <= 0.0) {
+        float diskR = length(pos.xz);
+        if (diskR > 1.55 * u_rs && diskR < 5.8 * u_rs) {
+          float beta = sqrt(clamp(u_rs / (2.0 * max(diskR - u_rs, 0.05)), 0.0, 0.75));
+          vec3 tangent = normalize(vec3(-pos.z, 0.0, pos.x));
+          float cosTheta = dot(tangent, -vel);
+          float gamma = 1.0 / sqrt(max(1.0 - beta * beta, 0.05));
+          float doppler = 1.0 / max(gamma * (1.0 - beta * cosTheta), 0.15);
+          float beam = pow(clamp(doppler, 0.35, 2.2), 3.2);
+          float ring = 0.65 + 0.35 * sin(diskR * 12.0 - u_time * 5.0);
+          vec3 diskCol = mix(vec3(1.0, 0.32, 0.05), vec3(0.2, 0.92, 1.0), clamp((doppler - 0.8) * 0.8, 0.0, 1.0));
+          diskAccum += diskCol * beam * ring * 0.55;
+        }
+      }
+    }
+    if (!captured) {
+      col = starfield(vel, 0) + diskAccum;
+    } else {
+      col = diskAccum;
+    }
+  } else if (u_mode == 1) {
+    // Morris-Thorne Traversable Wormhole Throat Lensing
+    float b0 = max(u_rs * 1.3, 0.5);
+    vec3 pos = ro;
+    vec3 vel = rd;
+    int chart = 0;
+    for (int i = 0; i < 80; i++) {
+      float r = length(pos);
+      if (r < b0 * 1.15 && dot(pos, vel) < 0.0) {
+        chart = 1 - chart;
+        vel = normalize(reflect(vel, normalize(pos)) * u_k + vel);
+        pos += vel * (b0 * 1.4);
+      }
+      pos += vel * 0.12;
+    }
+    float throatGlow = exp(-pow(length(cross(ro, rd)) - b0, 2.0) * 3.5);
+    col = starfield(vel, chart) + throatGlow * vec3(0.0, 0.95, 1.0) * 0.85;
+  } else {
+    // Chrono-Portal Non-Euclidean Laser & Klein Chirality Arena
+    float r = length(uv);
+    float portalRing = exp(-pow(r - 0.55, 2.0) * 60.0);
+    int chart = (r < 0.55) ? 1 : 0;
+    vec3 dir = normalize(vec3(uv * (chart == 1 ? 1.8 : 1.0), -1.2));
+    col = starfield(camRot * dir, chart);
+    // Geodesic Laser Beam
+    float laser = exp(-pow( abs(uv.y - 0.12 * sin(uv.x * 4.0 + u_time * 3.0)), 2.0 ) * 900.0);
+    col += portalRing * vec3(0.0, 0.98, 1.0) * 1.4 + laser * vec3(1.0, 0.15, 0.65) * 1.3;
+  }
+
+  // ACES Tonemap
+  col = clamp((col * (2.51 * col + 0.03)) / (col * (2.43 * col + 0.59) + 0.14), 0.0, 1.0);
+  col = pow(col, vec3(1.0 / 2.2));
+  fragColor = vec4(col, 1.0);
+}`;
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    console.error('WebGL2 Shader Compile Error:', gl.getShaderInfoLog(s));
+  }
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, vsSrc));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, fsSrc));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
+const loc = gl.getAttribLocation(prog, 'a_pos');
+gl.enableVertexAttribArray(loc);
+gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+
+const uRes = gl.getUniformLocation(prog, 'u_res');
+const uTime = gl.getUniformLocation(prog, 'u_time');
+const uRs = gl.getUniformLocation(prog, 'u_rs');
+const uK = gl.getUniformLocation(prog, 'u_k');
+const uMode = gl.getUniformLocation(prog, 'u_mode');
+const uRot = gl.getUniformLocation(prog, 'u_rot');
+
+function render(now) {
+  const t = (now - startTime) * 0.001;
+  const rs = parseFloat(document.getElementById('rs-slider').value);
+  const k = parseFloat(document.getElementById('k-slider').value);
+
+  gl.uniform2f(uRes, canvas.width, canvas.height);
+  gl.uniform1f(uTime, t);
+  gl.uniform1f(uRs, rs);
+  gl.uniform1f(uK, k);
+  gl.uniform1i(uMode, currentMode);
+  gl.uniform2f(uRot, yaw + t * 0.15, pitch);
+
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+  document.getElementById('telemetry-box').textContent =
+    `r_s = ${rs.toFixed(2)} | r_ph = ${(1.5 * rs).toFixed(2)} | ISCO = ${(3.0 * rs).toFixed(2)} | κ = ${k.toFixed(2)} | Geodesic = 96 steps`;
+
+  requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+
+// 128 BPM WebAudio Synth
+let audioCtx = null, synthInterval = null;
+function toggleAudio() {
+  if (audioCtx) {
+    clearInterval(synthInterval);
+    audioCtx.close();
+    audioCtx = null;
+    document.getElementById('audio-btn').textContent = '🔊 128 BPM SYNTH';
+    return;
+  }
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  document.getElementById('audio-btn').textContent = '🔇 STOP SYNTH';
+  let step = 0;
+  const notes = [55, 65.41, 73.42, 82.41, 110, 98.0, 87.31, 65.41];
+  synthInterval = setInterval(() => {
+    const now = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = (step % 4 === 0) ? 'sawtooth' : 'triangle';
+    osc.frequency.setValueAtTime(notes[step % notes.length], now);
+    gain.gain.setValueAtTime(0.14, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.21);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(now);
+    osc.stop(now + 0.22);
+    step++;
+  }, (60 / 128 / 2) * 1000);
+}
+</script>
+</body>
+</html>

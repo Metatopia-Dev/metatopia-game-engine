@@ -284,7 +284,7 @@ impl ManifoldRaycaster {
             for portal in &active_portals {
                 if let Some(inter) = portal.ray_intersection(current_pos, mid_dir) {
                     let d: f32 = (inter - current_pos).magnitude();
-                    if d > 1e-4 && d <= actual_step {
+                    if d >= 0.0 && d <= actual_step + 1e-4 {
                         if hit_portal.as_ref().map_or(true, |(_, _, best_d)| d < *best_d) {
                             hit_portal = Some((inter, portal.id(), d));
                         }

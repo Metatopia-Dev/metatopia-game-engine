@@ -100,19 +100,20 @@ cargo run --release --example cyber_arena_fps
 
 ---
 
-### 4. Metatopia Studio — 3D Game Editor & Rhai Scripting Suite (`metatopia_editor`)
-Full-featured 3D scene editor with embedded **Rhai scripting engine**, live entity inspector, infinite grid viewport, and real-time Play/Edit simulation modes.
+### 4. Metatopia Studio 2.0 — Non-Euclidean 3D Editor & Rhai Scripting Suite (`metatopia_editor`)
+Full-featured 3D scene and manifold editor with embedded **Rhai scripting engine**, Non-Euclidean Portal Pair spawner (`+PORTAL` / <kbd>6</kbd>), live Manifold/Curvature/Chirality inspector, infinite grid viewport, and real-time Play/Edit simulation modes.
 
-- **Embedded Rhai Scripting**: Pure Rust dynamic scripting engine with live hot-reload (`R`), script presets (Pulsing Glow, Hover & Bob, Color Shift, Orbit), and console logging
-- **Scene Outliner & Inspector**: Inspect and manipulate transforms ($X, Y, Z, \text{Yaw}, \text{Pitch}$), PBR materials, metallic/roughness, and emissive glow
-- **Procedural Shapes**: Instant 3D primitive spawning (+Cube, +Sphere, +Cylinder, +Torus, +Capsule, +Particles)
-- **Play / Edit Modes**: Toggle simulation with <kbd>Space</kbd> to test script logic and physics live!
+- **Non-Euclidean Portal & Manifold Scripting**: Spawn linked portal pairs (`Chart 0 <-> Chart 1`) and script Gaussian curvature $\kappa$, Möbius gyrometric steps (`e.mobius_step(...)`), and chirality flips (`e.flip_chirality()`) live in Rhai
+- **Embedded Rhai Scripting**: Pure Rust dynamic scripting engine with live hot-reload (`R`), 5 script presets (including *Non-Euclidean Portal*), and console logging
+- **Scene Outliner & Manifold Inspector**: Inspect and manipulate transforms ($X, Y, Z, \text{Yaw}, \text{Pitch}$), active `CHART`, Gaussian curvature `K`, `CHIRALITY`, and PBR materials
+- **Play / Edit & Headless Verification Modes**: Toggle live simulation with <kbd>Space</kbd>, or run `cargo run --release --example metatopia_editor -- --verify` for automated CI verification!
 
 ```bash
 cargo run --release --example metatopia_editor
+cargo run --release --example metatopia_editor -- --verify
 ```
 
-**Controls**: WASD + Mouse Fly · Space Play/Edit · Tab Cycle Selection · 1–5 Spawn Objects · G Script Presets · R Hot-Reload · Arrow Keys Move · Q/E Rotate · X Delete
+**Controls**: WASD + Mouse Fly · Space Play/Edit · Tab Cycle Selection · 1–5 Spawn Objects · 6 / `+PORTAL` Spawn Portal Pair · G Script Presets · R Hot-Reload · Arrow Keys Move · Q/E Rotate · X Delete
 
 ---
 
@@ -209,7 +210,28 @@ cargo run --release --example hyperbolic_portal_benchmark -- --record hyperbolic
 
 ---
 
-### 10. GPU-to-Silicon Photonics Optical Interconnect Simulator (`photonics_sim`)
+### 10. CHRONO-PORTAL: 5-Chamber Non-Euclidean Puzzle & Relativistic FPS (`non_euclidean_puzzle_fps`)
+Playable 5-chamber non-Euclidean puzzle and combat game (*Antichamber × Portal*) combining Riemannian portal mechanics, Klein Bottle chirality locks, 4D Lorentzian General Relativity, and authoritative cross-portal combat:
+
+- **Chamber 1 — Geodesic Laser Routing**: Route laser beams through portals (`ManifoldRaycaster::cast_geodesic_ray`) from Chart 0 into Chart 1 to unlock the receptor
+- **Chamber 2 — Scale-Changing Non-Euclidean Portals**: Traverse non-isometric $2.0\times$ scale-transforming portals
+- **Chamber 3 — Non-Orientable Klein Bottle ($\mathbb{K}^3$) Chirality Lock**: Invert player handedness (`chirality = -1`) across the orientation-reversing $Z$-boundary
+- **Chamber 4 — Schwarzschild Black Hole & Morris-Thorne Traversable Wormhole**: Navigate gravitational lensing ($r_{\text{ph}} = 1.5 r_s$, ISCO $= 3 r_s$, Doppler $\delta^4$ accretion disk) and traverse a zero-tidal-force Morris-Thorne wormhole throat ($l > 0 \to l < 0$)
+- **Chamber 5 — Cross-Portal Sentinel Boss Arena**: Defeat the Sentinel Boss in the destination chart using authoritative cross-portal geodesic raycasts (`NetServer::resolve_cross_portal_shot`)
+
+```bash
+# Interactive WGPU Mode
+cargo run --release --example non_euclidean_puzzle_fps
+
+# Headless Automated 5-Chamber Playthrough Verification
+cargo run --release --example non_euclidean_puzzle_fps -- --verify
+```
+
+**Controls**: WASD + Mouse Look · 1–5 Select Chamber · Q/E Rotate Laser Emitter · Left Click / Space Fire Cross-Portal Geodesic Beam
+
+---
+
+### 11. GPU-to-Silicon Photonics Optical Interconnect Simulator (`photonics_sim`)
 Interactive 3D simulator for WDM microring resonators, Mach-Zehnder interferometers (MZI), waveguide propagation loss, thermal tuning, and eye-diagram BER analysis.
 
 ```bash
@@ -218,21 +240,21 @@ cargo run --release --example photonics_sim
 
 ---
 
-### 11. Basic Graphics (`basic_graphics`)
+### 12. Basic Graphics (`basic_graphics`)
 Minimal WGPU rendering setup demonstrating the engine's shader pipeline.
 
 ```bash
 cargo run --release --example basic_graphics
 ```
 
-### 12. Simple Demo (`simple_demo`)
+### 13. Simple Demo (`simple_demo`)
 Console-based demonstration of the manifold, ECS, and portal systems without GPU rendering.
 
 ```bash
 cargo run --release --example simple_demo
 ```
 
-### 13. My First Game — Quickstart Template (`my_first_game`)
+### 14. My First Game — Quickstart Template (`my_first_game`)
 Minimal ~130-line game demonstrating the zero-boilerplate `quickstart` module. Walk over colored cubes to collect them.
 
 ```bash
@@ -253,6 +275,7 @@ src/
 ├── collision.rs        # AABB, Sphere, Ray, CollisionWorld
 ├── audio.rs            # Audio engine (SFX, music, preloading)
 ├── scoring/mod.rs      # ScoreTracker, combos, HudData
+├── relativity/mod.rs   # 4D Lorentzian Schwarzschild Black Hole & Morris-Thorne WormholeRK4 solver
 ├── manifold/
 │   ├── mod.rs          # Manifold container & multi-chart topology
 │   ├── chart.rs        # Chart, ChartId, GeometryType
@@ -260,6 +283,9 @@ src/
 │   ├── metric.rs       # Riemannian metric tensor, Poincaré ball, Möbius addition, Christoffel symbols
 │   ├── geodesic.rs     # Shortest-path & RK4 geodesic integration
 │   └── raycast.rs      # Non-Euclidean geodesic ray-marching & multi-bounce portal benchmark
+├── net/                # Authoritative UDP server, cross-portal geodesic hit detection & portal-aware interpolation
+├── scripting.rs        # Embedded Rhai scripting with Non-Euclidean curvature, Möbius & chirality bindings
+├── wasm.rs             # WebAssembly / WebXR session & Multi-Target Showcase Hub manifest
 ├── photonics/          # Silicon photonics WDM, microring, MZI & link budget engine
 ├── graphics/
 │   ├── mod.rs          # Renderer
@@ -276,6 +302,7 @@ src/
 
 shaders/
 ├── hyperbolic_portal_benchmark.wgsl # 16-bounce Non-Euclidean portal & H3 {4,3,5} honeycomb ray marcher
+├── non_euclidean_puzzle.wgsl        # Chrono-Portal Riemannian curvature & Schwarzschild Doppler shader
 ├── template_game.wgsl  # Starter shader for quickstart games
 ├── non_euclidean.wgsl  # PBR + portal rooms + orbs + noise
 ├── pest_control.wgsl   # FPS environment + PBR + film grain
@@ -285,9 +312,10 @@ shaders/
 
 examples/
 ├── hyperbolic_portal_benchmark.rs # Non-Euclidean ray-marched portal benchmark & 128 BPM audiovisual synth
+├── non_euclidean_puzzle_fps.rs    # CHRONO-PORTAL: 5-Chamber Non-Euclidean Puzzle & Relativistic FPS
 ├── photonics_sim.rs    # 3D GPU-to-silicon photonics optical interconnect simulator
 ├── metatopia_sandbox.rs # 7 next-gen engine subsystems showcase
-├── metatopia_editor.rs # 3D studio editor with live Rhai scripting
+├── metatopia_editor.rs # Metatopia Studio 2.0 3D editor with portal spawner & live Rhai scripting
 ├── cyber_arena_fps.rs  # Cyberpunk 3D arena FPS
 ├── metatopia_vr_quest.rs # Stereoscopic 3D VR experience for Meta Quest 3S
 ├── my_first_game.rs    # Quickstart template (~130 lines)
@@ -297,6 +325,11 @@ examples/
 ├── vr_netflix_hyperbolic.rs  # Hyperbolic cinema
 ├── basic_graphics.rs   # Minimal WGPU demo
 └── simple_demo.rs      # Console manifold demo
+
+web_simulator/
+├── hub.html                  # Unified WebGL2 Showcase Hub (Schwarzschild GR, Wormholes, Chrono-Portal)
+├── non_euclidean_portal.html # 5-Scene Non-Euclidean & Klein Bottle WebGL2 + WebAudio Explorer
+└── index.html                # Interactive Silicon Photonics & MZI Browser Lab
 ```
 
 ### Dependencies
@@ -507,15 +540,15 @@ This project is licensed under the MIT License — see the LICENSE file for deta
 - [x] Audio engine integration in quickstart
 - [x] Scoring system with combo mechanics
 - [x] Mouse delta tracking + FPS crosshair
-- [x] 103+ automated unit tests
+- [x] 110+ automated unit tests
 - [x] Torus ($\mathbb{T}^3$) and Non-Orientable Klein Bottle ($\mathbb{K}^3$) manifolds with chirality inversion
 - [x] Exact 3D Poincaré Ball gyrometric geodesics & RK4 Christoffel ODE integration
 - [x] 3D Geodesic Particle Swarm (`GeodesicParticleSwarm`) + volumetric GPU particle trails
-- [x] Standalone zero-install WebGL2 + WebAudio browser visualizer (`web_simulator/non_euclidean_portal.html`)
-- [ ] Dynamic mesh updates (instanced drawing)
-- [ ] Networked multiplayer support
-- [ ] Visual scripting for portal creation
-- [ ] Integration plugins for other engines
+- [x] Standalone zero-install WebGL2 + WebAudio browser visualizer (`web_simulator/non_euclidean_portal.html` & `web_simulator/hub.html`)
+- [x] 4D Lorentzian General Relativity: Schwarzschild Black Holes ($r_{\text{ph}} = 1.5 r_s$, Doppler $\delta^4$) & Morris-Thorne Traversable Wormholes (`src/relativity/mod.rs`)
+- [x] Playable 5-Chamber Non-Euclidean Puzzle & Relativistic FPS Game (`examples/non_euclidean_puzzle_fps.rs`)
+- [x] Networked multiplayer support with cross-portal geodesic hit detection & portal-aware snapshot interpolation (`src/net/`)
+- [x] Visual & Rhai scripting for Non-Euclidean portal creation, curvature $\kappa$, and chirality (`src/scripting.rs` & `examples/metatopia_editor.rs`)
 
 ---
 

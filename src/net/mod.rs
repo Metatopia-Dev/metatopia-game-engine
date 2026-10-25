@@ -16,5 +16,5 @@ pub mod client;
 pub use protocol::{ClientMessage, ServerMessage, EntityState, ChannelType, PROTOCOL_VERSION, PROTOCOL_MAGIC};
 pub use transport::{UdpTransport, Packet, PacketHeader};
 pub use replication::{Snapshot, SnapshotBuffer, ClientPrediction, SavedInput};
-pub use server::{NetServer, ClientSession};
+pub use server::{NetServer, ClientSession, CrossPortalHitResult};
 pub use client::{NetClient, ConnectionState};

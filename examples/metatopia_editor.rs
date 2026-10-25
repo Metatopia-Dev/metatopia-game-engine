@@ -10,10 +10,11 @@
 
 use metatopia_engine::quickstart::*;
 use metatopia_engine::geometry::ProceduralMesh;
+use metatopia_engine::manifold::{Manifold, GeometryType};
 use metatopia_engine::particles::ParticleSystem;
 use metatopia_engine::physics::PhysicsWorld;
 use metatopia_engine::scripting::{ScriptEngine, ScriptEntityState};
-use cgmath::{Vector3, InnerSpace};
+use cgmath::{Vector3, InnerSpace, SquareMatrix};
 
 const SHADER_SRC: &str = include_str!("../shaders/editor.wgsl");
 
@@ -83,6 +84,7 @@ pub struct MetatopiaStudio {
     pub next_entity_id: u32,
     pub selected_index: usize,
     pub mode: EditorMode,
+    pub manifold: Manifold,
     pub script_engine: ScriptEngine,
     pub physics_world: PhysicsWorld,
     pub particle_system: ParticleSystem,
@@ -96,6 +98,8 @@ impl MetatopiaStudio {
     pub fn new() -> Self {
         let mut script_engine = ScriptEngine::new();
         let mut entities = Vec::new();
+        let mut manifold = Manifold::new();
+        manifold.add_chart(GeometryType::Hyperbolic);
 
         // 1. Central Sci-Fi Power Core (Torus with Pulsing Glow)
         let mut core = EditorEntity::new(1, "NeonCore", MeshType::Torus, [0.0, 2.5, 0.0], [0.0, 0.9, 1.0]);
@@ -170,10 +174,11 @@ impl MetatopiaStudio {
             next_entity_id: 6,
             selected_index: 0,
             mode: EditorMode::Edit,
+            manifold,
             script_engine,
             physics_world: PhysicsWorld::new(),
             particle_system: ParticleSystem::new(1000),
-            status_message: "METATOPIA STUDIO READY. Use Toolbar buttons or hotkeys. Right-Click+Drag to fly.".into(),
+            status_message: "METATOPIA STUDIO 2.0 READY. Press 6 or +PORTAL to spawn Non-Euclidean Portal Pair.".into(),
             status_timer: 5.0,
             current_script_preset: 0,
             camera_initialized: false,
@@ -191,6 +196,64 @@ impl MetatopiaStudio {
         self.selected_index = self.entities.len() - 1;
 
         self.set_status(&format!("Spawned {} (ID: {})", name, id));
+    }
+
+    /// Spawn a linked Non-Euclidean Portal Pair connecting Chart 0 (Euclidean) and Chart 1 (Hyperbolic)
+    pub fn spawn_portal_pair(&mut self) {
+        let id_a = self.next_entity_id;
+        self.next_entity_id += 1;
+        let id_b = self.next_entity_id;
+        self.next_entity_id += 1;
+
+        let pos_a = [-3.0, 2.0, -3.5];
+        let pos_b = [3.0, 2.0, -3.5];
+
+        let portal_script = r#"
+            fn update(e, dt) {
+                let t = get_var(e, "t") + dt * 2.0;
+                set_var(e, "t", t);
+                e.set_curvature(-1.0 + sin(t) * 0.25);
+                e.set_emissive(2.5 + sin(t * 2.0) * 1.0);
+                e.rotate(0.0, 0.6 * dt, 0.0);
+                return e;
+            }
+        "#;
+
+        let mut portal_a = EditorEntity::new(id_a, "PortalAlpha", MeshType::Torus, pos_a, [0.0, 0.95, 1.0]);
+        portal_a.scale = [1.4, 1.4, 0.35];
+        portal_a.emissive = 3.0;
+        portal_a.script_state.chart_id = 0;
+        portal_a.script_state.curvature_k = 0.0;
+        portal_a.script_state.portal_target_chart = Some(1);
+        portal_a.script_source = portal_script.to_string();
+        portal_a.script_ast = self.script_engine.compile(portal_script).ok();
+        portal_a.script_preset_name = "Non-Euclidean Portal".into();
+
+        let mut portal_b = EditorEntity::new(id_b, "PortalOmega", MeshType::Torus, pos_b, [1.0, 0.2, 0.85]);
+        portal_b.scale = [1.4, 1.4, 0.35];
+        portal_b.emissive = 3.0;
+        portal_b.script_state.chart_id = 1;
+        portal_b.script_state.curvature_k = -1.0;
+        portal_b.script_state.portal_target_chart = Some(0);
+        portal_b.script_source = portal_script.to_string();
+        portal_b.script_ast = self.script_engine.compile(portal_script).ok();
+        portal_b.script_preset_name = "Non-Euclidean Portal".into();
+
+        let _ = self.manifold.create_portal(
+            metatopia_engine::manifold::ChartId(0),
+            metatopia_engine::manifold::ChartId(1),
+            cgmath::Point3::new(pos_a[0], pos_a[1], pos_a[2]),
+            cgmath::Point3::new(pos_b[0], pos_b[1], pos_b[2]),
+            cgmath::Matrix4::identity(),
+        );
+
+        self.entities.push(portal_a);
+        self.entities.push(portal_b);
+        self.selected_index = self.entities.len() - 1;
+        self.set_status(&format!(
+            "Spawned Linked Portal Pair #{} <-> #{} (Charts 0 <-> 1, K=-1.0)",
+            id_a, id_b
+        ));
     }
 
     /// Cycle script presets on selected entity
@@ -230,6 +293,16 @@ impl MetatopiaStudio {
                     e.set_x(sin(t) * 5.0);
                     e.set_z(cos(t) * 5.0);
                     e.rotate(3.0 * dt, 0.0, 0.0);
+                    return e;
+                }
+            "#),
+            ("Non-Euclidean Portal", r#"
+                fn update(e, dt) {
+                    let t = get_var(e, "t") + dt * 2.0;
+                    set_var(e, "t", t);
+                    e.set_curvature(-1.0 + sin(t) * 0.25);
+                    e.mobius_step(0.05 * dt * cos(t), 0.0, 0.05 * dt * sin(t));
+                    e.set_emissive(2.5 + sin(t * 2.0) * 1.0);
                     return e;
                 }
             "#),
@@ -460,6 +533,10 @@ impl GameApp for MetatopiaStudio {
                 else if m_ndc_x >= -0.02 && m_ndc_x <= 0.08 {
                     self.spawn_entity(MeshType::Capsule, "BioCapsule", [0.1, 1.0, 0.7]);
                 }
+                // +Portal Pair
+                else if m_ndc_x >= 0.60 && m_ndc_x <= 0.76 {
+                    self.spawn_portal_pair();
+                }
                 // Cycle Script
                 else if m_ndc_x >= 0.12 && m_ndc_x <= 0.28 {
                     self.cycle_script_preset();
@@ -529,6 +606,7 @@ impl GameApp for MetatopiaStudio {
         if ctx.key_pressed(VirtualKey::Digit3) { self.spawn_entity(MeshType::Cylinder, "PowerPillar", [1.0, 0.9, 0.1]); }
         if ctx.key_pressed(VirtualKey::Digit4) { self.spawn_entity(MeshType::Torus, "GravityRing", [0.8, 0.2, 1.0]); }
         if ctx.key_pressed(VirtualKey::Digit5) { self.spawn_entity(MeshType::Capsule, "BioCapsule", [0.1, 1.0, 0.7]); }
+        if ctx.key_pressed(VirtualKey::Digit6) { self.spawn_portal_pair(); }
         if ctx.key_pressed(VirtualKey::KeyG) { self.cycle_script_preset(); }
 
         if ctx.key_pressed(VirtualKey::KeyX) && !self.entities.is_empty() {
@@ -728,7 +806,7 @@ impl GameApp for MetatopiaStudio {
         push_ui_rect(&mut verts, &mut indices, -1.0, 0.835, 1.0, 0.84, [0.18, 0.22, 0.30], 1.0); // Bottom border
 
         // Studio Title
-        push_text(&mut verts, &mut indices, "METATOPIA STUDIO v0.2", -0.98, 0.95, 0.016, 0.030, [0.0, 0.9, 1.0]);
+        push_text(&mut verts, &mut indices, "METATOPIA STUDIO v2.0", -0.98, 0.95, 0.016, 0.030, [0.0, 0.9, 1.0]);
 
         // Play / Edit Mode Button (Green for Play, Orange for Edit)
         let (mode_bg, mode_label) = match self.mode {
@@ -763,6 +841,9 @@ impl GameApp for MetatopiaStudio {
 
         push_ui_rect(&mut verts, &mut indices, 0.46, 0.86, 0.58, 0.97, [0.6, 0.15, 0.15], 0.9);
         push_text(&mut verts, &mut indices, "[DEL X]", 0.48, 0.89, 0.014, 0.026, [1.0, 1.0, 1.0]);
+
+        push_ui_rect(&mut verts, &mut indices, 0.60, 0.86, 0.76, 0.97, [0.05, 0.45, 0.55], 0.95);
+        push_text(&mut verts, &mut indices, "+PORTAL", 0.615, 0.89, 0.014, 0.026, [0.0, 0.98, 1.0]);
 
         // B. Left Scene Outliner Panel
         push_ui_rect(&mut verts, &mut indices, -0.98, -0.60, -0.68, 0.80, [0.06, 0.07, 0.10], 0.92);
@@ -828,6 +909,20 @@ impl GameApp for MetatopiaStudio {
             push_ui_rect(&mut verts, &mut indices, 0.70, 0.12, 0.96, 0.22, [0.15, 0.10, 0.22], 0.9);
             let script_label = format!("> {}", selected.script_preset_name);
             push_text(&mut verts, &mut indices, &script_label, 0.72, 0.15, 0.012, 0.022, [1.0, 0.8, 0.2]);
+
+            // Non-Euclidean Manifold & Curvature Inspector Readout
+            let chart_label = format!(
+                "CHART: {} | K: {:.2}",
+                selected.script_state.chart_id,
+                selected.script_state.curvature_k
+            );
+            push_text(&mut verts, &mut indices, &chart_label, 0.70, 0.04, 0.012, 0.021, [0.0, 0.95, 1.0]);
+            let chir_label = format!(
+                "CHIRALITY: {} | PORTALS: {}",
+                selected.script_state.chirality,
+                self.manifold.portals().count()
+            );
+            push_text(&mut verts, &mut indices, &chir_label, 0.70, -0.04, 0.011, 0.020, [1.0, 0.4, 0.85]);
         }
 
         // D. Bottom Script Console & Status Bar Panel
@@ -839,7 +934,7 @@ impl GameApp for MetatopiaStudio {
 
         // Code Preview Line 1 & 2
         push_text(&mut verts, &mut indices, "1 | FN UPDATE(ENTITY, DT) {", -0.96, -0.73, 0.012, 0.022, [0.7, 0.75, 0.8]);
-        push_text(&mut verts, &mut indices, "2 |   ENTITY.ROTATE(1.5 * DT, 0.8 * DT, 0.0);", -0.96, -0.80, 0.012, 0.022, [0.9, 0.8, 0.2]);
+        push_text(&mut verts, &mut indices, "2 |   ENTITY.SET_CURVATURE(-1.0); ENTITY.MOBIUS_STEP(0.05, 0.0);", -0.96, -0.80, 0.012, 0.022, [0.9, 0.8, 0.2]);
         push_text(&mut verts, &mut indices, "3 |   RETURN ENTITY; }", -0.96, -0.87, 0.012, 0.022, [0.7, 0.75, 0.8]);
 
         // Live Console Log
@@ -851,26 +946,50 @@ impl GameApp for MetatopiaStudio {
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--verify" || a == "--bench") {
+        let mut studio = MetatopiaStudio::new();
+        let initial_count = studio.entities.len();
+        studio.spawn_portal_pair();
+        assert_eq!(studio.entities.len(), initial_count + 2);
+        assert_eq!(studio.manifold.portals().count(), 1);
+        studio.mode = EditorMode::Play;
+        for entity in &mut studio.entities {
+            if let Some(ast) = &entity.script_ast {
+                studio
+                    .script_engine
+                    .execute_update(ast, &mut entity.script_state, 0.016)
+                    .expect("Rhai script execution failed in Studio verify");
+            }
+        }
+        let (verts, indices) = studio.build_mesh();
+        assert!(!verts.is_empty() && !indices.is_empty());
+        println!(
+            "[METATOPIA STUDIO 2.0 VERIFIED] entities={} portals={} verts={} indices={}",
+            studio.entities.len(),
+            studio.manifold.portals().count(),
+            verts.len(),
+            indices.len()
+        );
+        return;
+    }
+
     println!("============================================================");
-    println!("  METATOPIA STUDIO — 3D Game Editor & Rhai Scripting Suite");
+    println!("  METATOPIA STUDIO 2.0 — Non-Euclidean 3D Editor & Rhai Suite");
     println!("============================================================");
     println!(" Features:");
     println!("   • Live 3D Viewport with Infinite Grid & Transform Gizmo");
-    println!("   • Visual On-Screen Toolbar, Outliner, & Inspector");
+    println!("   • Non-Euclidean Portal Pair Spawner (+PORTAL / Key 6)");
+    println!("   • Manifold Chart, Curvature K, & Chirality Inspector");
     println!("   • Embedded Rhai Scripting Engine with Hot-Reload");
-    println!("   • Play / Edit Real-Time Simulation Modes");
     println!(" Controls:");
     println!("   Mouse Left Click : Click Toolbar / Outliner / Inspector Buttons");
     println!("   Mouse Right Drag : Orbit / Fly Camera");
     println!("   SPACE            : Toggle [PLAY] / [EDIT] simulation modes");
     println!("   TAB              : Cycle selection through scene entities");
-    println!("   1 / 2 / 3 / 4 / 5 : Spawn Cube / Sphere / Cylinder / Torus / Capsule");
+    println!("   1/2/3/4/5/6      : Spawn Cube/Sphere/Cyl/Torus/Capsule/+Portal Pair");
     println!("   G                : Cycle Rhai Script Presets on selected object");
     println!("   R                : Recompile and Hot-Reload all Rhai scripts");
-    println!("   Arrow Keys       : Translate selected object (X / Z)");
-    println!("   PgUp / PgDown    : Translate selected object vertically (Y)");
-    println!("   Q / E            : Rotate selected object");
-    println!("   X                : Delete selected object");
     println!("============================================================");
 
     run_game(MetatopiaStudio::new());

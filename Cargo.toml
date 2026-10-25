@@ -95,3 +95,7 @@ path = "examples/gpu_to_silicon_photonics_sim.rs"
 [[example]]
 name = "hyperbolic_portal_benchmark"
 path = "examples/hyperbolic_portal_benchmark.rs"
+
+[[example]]
+name = "non_euclidean_puzzle_fps"
+path = "examples/non_euclidean_puzzle_fps.rs"

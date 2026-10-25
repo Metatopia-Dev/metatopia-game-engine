@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use rhai::{Engine, AST, Scope, Dynamic, Array};
 
-/// Replicated entity state accessible and modifiable by Rhai scripts
+/// Replicated entity state accessible and modifiable by Rhai scripts (including Non-Euclidean manifold properties)
 #[derive(Debug, Clone)]
 pub struct ScriptEntityState {
     pub id: u32,
@@ -19,6 +19,10 @@ pub struct ScriptEntityState {
     pub color: [f32; 3],
     pub emissive: f32,
     pub vel: [f32; 3],
+    pub chart_id: u32,
+    pub curvature_k: f32,
+    pub chirality: i32,
+    pub portal_target_chart: Option<u32>,
     pub custom_vars: HashMap<String, Dynamic>,
 }
 
@@ -33,6 +37,10 @@ impl Default for ScriptEntityState {
             color: [1.0, 1.0, 1.0],
             emissive: 0.0,
             vel: [0.0, 0.0, 0.0],
+            chart_id: 0,
+            curvature_k: 0.0,
+            chirality: 1,
+            portal_target_chart: None,
             custom_vars: HashMap::new(),
         }
     }
@@ -49,6 +57,10 @@ impl ScriptEntityState {
             color,
             emissive: 0.0,
             vel: [0.0, 0.0, 0.0],
+            chart_id: 0,
+            curvature_k: 0.0,
+            chirality: 1,
+            portal_target_chart: None,
             custom_vars: HashMap::new(),
         }
     }
@@ -82,7 +94,7 @@ impl ScriptEngine {
             println!("[Script]: {}", msg);
         });
 
-        // 2. Register ScriptEntityState Type and Methods
+        // 2. Register ScriptEntityState Type and Methods (including Non-Euclidean Manifold API)
         engine.register_type_with_name::<ScriptEntityState>("Entity")
             .register_fn("get_x", |e: &mut ScriptEntityState| -> f64 { e.pos[0] as f64 })
             .register_fn("get_y", |e: &mut ScriptEntityState| -> f64 { e.pos[1] as f64 })
@@ -115,11 +127,38 @@ impl ScriptEngine {
             .register_fn("set_scale", |e: &mut ScriptEntityState, sx: f64, sy: f64, sz: f64| {
                 e.scale = [sx as f32, sy as f32, sz as f32];
             })
+            .register_fn("get_chart", |e: &mut ScriptEntityState| -> i64 { e.chart_id as i64 })
+            .register_fn("set_chart", |e: &mut ScriptEntityState, c: i64| { e.chart_id = c.max(0) as u32; })
+            .register_fn("get_curvature", |e: &mut ScriptEntityState| -> f64 { e.curvature_k as f64 })
+            .register_fn("set_curvature", |e: &mut ScriptEntityState, k: f64| {
+                e.curvature_k = (k as f32).clamp(-2.5, 2.5);
+            })
+            .register_fn("get_chirality", |e: &mut ScriptEntityState| -> i64 { e.chirality as i64 })
+            .register_fn("flip_chirality", |e: &mut ScriptEntityState| {
+                e.chirality = -e.chirality;
+                e.pos[0] = -e.pos[0];
+            })
+            .register_fn("link_portal", |e: &mut ScriptEntityState, dst_chart: i64| {
+                e.portal_target_chart = Some(dst_chart.max(0) as u32);
+            })
+            .register_fn("mobius_step", |e: &mut ScriptEntityState, dx: f64, dy: f64, dz: f64| {
+                let r2 = e.pos[0] * e.pos[0] + e.pos[1] * e.pos[1] + e.pos[2] * e.pos[2];
+                let inv_lambda = (1.0 + e.curvature_k * 0.05 * r2).max(0.15);
+                e.pos[0] += (dx as f32) * inv_lambda * (e.chirality as f32);
+                e.pos[1] += (dy as f32) * inv_lambda;
+                e.pos[2] += (dz as f32) * inv_lambda;
+            })
+            .register_fn("mobius_step", |e: &mut ScriptEntityState, dx: f64, dz: f64| {
+                let r2 = e.pos[0] * e.pos[0] + e.pos[1] * e.pos[1] + e.pos[2] * e.pos[2];
+                let inv_lambda = (1.0 + e.curvature_k * 0.05 * r2).max(0.15);
+                e.pos[0] += (dx as f32) * inv_lambda * (e.chirality as f32);
+                e.pos[2] += (dz as f32) * inv_lambda;
+            })
             .register_fn("set_var", |e: &mut ScriptEntityState, key: &str, val: Dynamic| {
                 e.custom_vars.insert(key.to_string(), val);
             })
             .register_fn("get_var", |e: &mut ScriptEntityState, key: &str| -> Dynamic {
-                e.custom_vars.get(key).cloned().unwrap_or(Dynamic::UNIT)
+                e.custom_vars.get(key).cloned().unwrap_or(Dynamic::from(0.0_f64))
             });
 
         // 3. Math Helpers
@@ -159,10 +198,17 @@ impl ScriptEngine {
         scope.push("entity", entity.clone());
         scope.push("dt", dt as f64);
 
-        // Try calling update(entity, dt)
-        if let Ok(modified_entity) = self.engine.call_fn::<ScriptEntityState>(&mut scope, ast, "update", (entity.clone(), dt as f64)) {
-            *entity = modified_entity;
-            return Ok(());
+        let has_update_fn = ast.iter_functions().any(|f| f.name == "update");
+        if has_update_fn {
+            match self.engine.call_fn::<ScriptEntityState>(&mut scope, ast, "update", (entity.clone(), dt as f64)) {
+                Ok(modified_entity) => {
+                    *entity = modified_entity;
+                    return Ok(());
+                }
+                Err(e) => {
+                    return Err(format!("Script Runtime Error in update(): {}", e));
+                }
+            }
         }
 
         // Try evaluating script directly in scope if no function defined
@@ -236,5 +282,31 @@ mod tests {
         assert_eq!(entity.color, [0.0, 1.0, 0.5]);
         assert_eq!(entity.emissive, 2.5);
         assert_eq!(entity.custom_vars.get("health").unwrap().clone().cast::<i64>(), 100);
+    }
+
+    #[test]
+    fn test_script_non_euclidean_manifold_and_chirality_bindings() {
+        let mut script_engine = ScriptEngine::new();
+        let mut entity = ScriptEntityState::new(3, "KleinPortalGate", [2.0, 1.5, 0.0], [0.0, 0.9, 1.0]);
+
+        let script = r#"
+            fn update(e, dt) {
+                e.set_chart(2);
+                e.set_curvature(-1.25);
+                e.link_portal(4);
+                e.flip_chirality();
+                e.mobius_step(1.0, 0.0, 0.0);
+                return e;
+            }
+        "#;
+
+        let ast = script_engine.compile(script).unwrap();
+        script_engine.execute_update(&ast, &mut entity, 0.1).unwrap();
+
+        assert_eq!(entity.chart_id, 2);
+        assert!((entity.curvature_k - (-1.25)).abs() < 1e-4);
+        assert_eq!(entity.portal_target_chart, Some(4));
+        assert_eq!(entity.chirality, -1);
+        assert!(entity.pos[0] < -2.0);
     }
 }

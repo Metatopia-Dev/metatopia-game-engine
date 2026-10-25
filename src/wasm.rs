@@ -120,6 +120,45 @@ impl WasmExportRunner {
 </body>
 </html>"#, title, wasm_filename)
     }
+
+    /// Return the catalog of interactive WebGPU/WebGL2 showcase modules for the Metatopia Browser Hub
+    pub fn default_showcase_catalog() -> Vec<WasmShowcaseEntry> {
+        vec![
+            WasmShowcaseEntry {
+                id: "non_euclidean_portal".into(),
+                title: "5-Scene Non-Euclidean & Klein Bottle Explorer".into(),
+                html_path: "non_euclidean_portal.html".into(),
+                manifold_summary: "H^3 Poincaré Ball, S^3 Hopf Fibration, K^3 Klein Bottle & T^3 Torus".into(),
+            },
+            WasmShowcaseEntry {
+                id: "schwarzschild_wormhole".into(),
+                title: "Schwarzschild Black Hole & Morris-Thorne Wormhole Ray-Tracer".into(),
+                html_path: "hub.html#relativity".into(),
+                manifold_summary: "4D Lorentzian Null Geodesics, Photon Sphere (1.5 r_s), Doppler Accretion Disk".into(),
+            },
+            WasmShowcaseEntry {
+                id: "chrono_portal_puzzle".into(),
+                title: "CHRONO-PORTAL: 5-Chamber Non-Euclidean Puzzle Simulator".into(),
+                html_path: "hub.html#puzzle".into(),
+                manifold_summary: "Cross-Portal Laser Routing, Scale Portals, & Klein Chirality Locks".into(),
+            },
+            WasmShowcaseEntry {
+                id: "silicon_photonics".into(),
+                title: "Silicon Photonics & Mach-Zehnder Interferometer Lab".into(),
+                html_path: "index.html".into(),
+                manifold_summary: "Coupled-Mode Theory Waveguides, Kerr Nonlinearity & Ring Resonators".into(),
+            },
+        ]
+    }
+}
+
+/// Metadata entry for an interactive browser showcase target
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WasmShowcaseEntry {
+    pub id: String,
+    pub title: String,
+    pub html_path: String,
+    pub manifold_summary: String,
 }
 
 // ─── Unit Tests ────────────────────────────────────────────────────────────
@@ -147,5 +186,13 @@ mod tests {
         assert!(html.contains("metatopia-canvas"));
         assert!(html.contains("ENTER WEBXR"));
         assert!(html.contains("game_pkg.js"));
+    }
+
+    #[test]
+    fn test_showcase_hub_manifest_generation() {
+        let catalog = WasmExportRunner::default_showcase_catalog();
+        assert_eq!(catalog.len(), 4);
+        assert_eq!(catalog[0].id, "non_euclidean_portal");
+        assert!(catalog[1].manifold_summary.contains("1.5 r_s"));
     }
 }
