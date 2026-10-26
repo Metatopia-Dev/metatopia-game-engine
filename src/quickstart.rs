@@ -667,7 +667,7 @@ pub fn run_game(mut app: impl GameApp + 'static) {
                             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                                 view: &view, resolve_target: None,
                                 ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.05, g: 0.05, b: 0.08, a: 1.0 }),
+                                    load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.004, g: 0.005, b: 0.010, a: 1.0 }),
                                     store: wgpu::StoreOp::Store,
                                 },
                             })],
