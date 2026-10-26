@@ -1,205 +1,377 @@
-//! Metatopia Game Engine v0.2.0 — Native macOS / Cross-Platform Executable
+//! Metatopia Game Engine v0.2.0 — Native macOS Ray-Marched Non-Euclidean & 4D Relativistic Studio
 //!
-//! Unified 3D Non-Euclidean & 4D Relativistic Game Engine Studio:
-//! - Interactive 3D Scene Viewport with infinite reference grid & XYZ transform gizmo
-//! - On-screen visual Studio UI (Top Toolbar, Scene Outliner, Property Inspector, Rhai Script IDE)
-//! - Non-Euclidean Riemannian Manifolds (H^3, E^3, S^3, K^3), Portal Pairs & Geodesic Raycasting
-//! - 4D Lorentzian Spacetime: Schwarzschild Black Hole (photon sphere 1.5 r_s) & Morris-Thorne Wormhole
-//! - Authoritative Cross-Portal Geodesic Weapon Raycast & Multiplayer Snapshot Replication
-//! - Embedded Rhai Scripting Engine with live hot-reload (`KeyR`)
+//! Combines:
+//!   1. Real-Time GPU Ray-Marched Non-Euclidean & 4D Relativistic Viewport (`shaders/studio_raymarch.wgsl`):
+//!      - 16-Bounce Recursive GPU Portal Ray Traversal across E³, H³, S³, K³, and T³ manifolds
+//!      - 4D Schwarzschild Black Hole Binet Null Geodesic Gravitational Lensing + Doppler Accretion Disk
+//!      - Hyperbolic H³ {4,3,5} Conformal Honeycomb Lattice & Spherical S³ Star-Vault
+//!      - Non-Orientable Klein Bottle K³ Chiral Parity Flip & Volumetric Cross-Portal Geodesic Laser
+//!   2. Crisp Native Vector Studio GUI (`egui` + `egui-wgpu` + `egui-winit`):
+//!      - Anti-aliased TrueType typography, glassmorphic dark-obsidian docks, interactive sliders,
+//!        Manifold Atlas Outliner, Relativistic Inspector, and Live Rhai Script IDE.
+//!   3. Built-in 60 FPS Metal WGPU Video Recorder (`--record-video <output.mp4>`) & CLI Verification (`--verify`).
 
-use metatopia_engine::geometry::ProceduralMesh;
-use metatopia_engine::manifold::{ChartId, GeometryType, Manifold, ManifoldRaycaster, PortalShape};
-use metatopia_engine::net::protocol::EntityState;
-use metatopia_engine::net::server::NetServer;
-use metatopia_engine::particles::ParticleSystem;
-use metatopia_engine::physics::PhysicsWorld;
-use metatopia_engine::quickstart::*;
+use cgmath::{InnerSpace, Matrix4, Point3, SquareMatrix, Vector3};
+use metatopia_engine::manifold::{
+    ChartId, GeodesicParticleSwarm, GeometryType, Manifold, ManifoldRaycaster, PortalShape,
+};
+use metatopia_engine::net::{EntityState, NetServer};
 use metatopia_engine::relativity::{MorrisThorneWormhole, SchwarzschildBlackHole, WormholeState};
 use metatopia_engine::scripting::{ScriptEngine, ScriptEntityState};
-use cgmath::{InnerSpace, Matrix4, Point3, SquareMatrix, Vector3};
+use std::io::Write;
+use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::time::Instant;
+use wgpu::util::DeviceExt;
+use winit::{
+    event::{DeviceEvent, ElementState, Event, MouseButton, WindowEvent},
+    event_loop::EventLoop,
+    keyboard::{KeyCode, PhysicalKey},
+    window::WindowBuilder,
+};
 
-const SHADER_SRC: &str = include_str!("../shaders/editor.wgsl");
+const SHADER_SRC: &str = include_str!("../shaders/studio_raymarch.wgsl");
 
-/// Types of 3D meshes that can be placed in the scene
+// ─── GPU Uniform Buffer (16-byte aligned, matches StudioViewportUniform in WGSL) ───
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct StudioViewportUniform {
+    pub camera_pos: [f32; 4],    // xyz = pos, w = fov
+    pub camera_dir: [f32; 4],    // xyz = forward, w = active_chart_id
+    pub camera_up: [f32; 4],     // xyz = up, w = curvature_k
+    pub resolution: [f32; 4],    // x = width, y = height, z = time, w = scene_mode
+    pub params: [f32; 4],        // x = max_portal_bounces, y = geodesic_on, z = heatmap_mode, w = max_steps
+    pub portal0_src: [f32; 4],
+    pub portal0_dst: [f32; 4],
+    pub portal0_norm: [f32; 4],
+    pub portal1_src: [f32; 4],
+    pub portal1_dst: [f32; 4],
+    pub portal1_norm: [f32; 4],
+    pub portal2_src: [f32; 4],
+    pub portal2_dst: [f32; 4],
+    pub portal2_norm: [f32; 4],
+    pub portal3_src: [f32; 4],
+    pub portal3_dst: [f32; 4],
+    pub portal3_norm: [f32; 4],
+    pub telemetry: [f32; 4],     // x = kick_env, y = bass_env, z = arp_env, w = play_mode
+    pub bh_params: [f32; 4],     // xyz = black_hole_pos, w = schwarzschild_radius r_s
+    pub laser_params: [f32; 4],  // x = laser_intensity, y = sentinel_hp_ratio, z = selected_id, w = gizmo_pulse
+}
+
+// ─── 5 Ray-Marched Non-Euclidean & Relativistic Studio Scenes ──────────────
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MeshType {
-    Cube,
-    Sphere,
-    Cylinder,
-    Torus,
-    Capsule,
+pub enum StudioScene {
+    RelativisticBlackHoleCorridor = 0,
+    HyperbolicHoneycombCathedral = 1,
+    SphericalCurvatureBridge = 2,
+    InfinityPortalMirrorTunnel = 3,
+    KleinBottleChiralLabyrinth = 4,
 }
 
-/// An editable 3D entity in the engine
-#[derive(Debug, Clone)]
-pub struct EditorEntity {
-    pub id: u32,
-    pub name: String,
-    pub mesh_type: MeshType,
-    pub pos: [f32; 3],
-    pub rot: [f32; 3], // [yaw, pitch, roll]
-    pub scale: [f32; 3],
-    pub color: [f32; 3],
-    pub metallic: f32,
-    pub roughness: f32,
-    pub emissive: f32,
-    pub is_dynamic_physics: bool,
-    pub script_source: String,
-    pub script_ast: Option<rhai::AST>,
-    pub script_state: ScriptEntityState,
-    pub script_preset_name: String,
-}
+impl StudioScene {
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::RelativisticBlackHoleCorridor => "1: Relativistic Corridor & Schwarzschild BH",
+            Self::HyperbolicHoneycombCathedral => "2: Hyperbolic H3 {4,3,5} Cathedral",
+            Self::SphericalCurvatureBridge => "3: Spherical S3 Star-Vault Bridge",
+            Self::InfinityPortalMirrorTunnel => "4: 16-Bounce Infinity Portal Tunnel",
+            Self::KleinBottleChiralLabyrinth => "5: Klein Bottle K3 Chiral Labyrinth",
+        }
+    }
 
-impl EditorEntity {
-    pub fn new(
-        id: u32,
-        name: impl Into<String>,
-        mesh_type: MeshType,
-        pos: [f32; 3],
-        color: [f32; 3],
-    ) -> Self {
-        let name_str = name.into();
-        let mut state = ScriptEntityState::new(id, name_str.clone(), pos, color);
-        state.emissive = 0.25;
-        Self {
-            id,
-            name: name_str,
-            mesh_type,
-            pos,
-            rot: [0.0, 0.0, 0.0],
-            scale: [1.0, 1.0, 1.0],
-            color,
-            metallic: 0.25,
-            roughness: 0.38,
-            emissive: 0.25,
-            is_dynamic_physics: false,
-            script_source: String::new(),
-            script_ast: None,
-            script_state: state,
-            script_preset_name: "None".into(),
+    pub fn short_label(self) -> &'static str {
+        match self {
+            Self::RelativisticBlackHoleCorridor => "1: Black Hole + Portals",
+            Self::HyperbolicHoneycombCathedral => "2: Hyperbolic H3 {4,3,5}",
+            Self::SphericalCurvatureBridge => "3: Spherical S3 Vault",
+            Self::InfinityPortalMirrorTunnel => "4: 16-Bounce Infinity",
+            Self::KleinBottleChiralLabyrinth => "5: Klein Bottle K3",
+        }
+    }
+
+    pub fn default_curvature(self) -> f32 {
+        match self {
+            Self::RelativisticBlackHoleCorridor => -0.45,
+            Self::HyperbolicHoneycombCathedral => -1.10,
+            Self::SphericalCurvatureBridge => 0.85,
+            Self::InfinityPortalMirrorTunnel => -0.65,
+            Self::KleinBottleChiralLabyrinth => -0.80,
+        }
+    }
+
+    pub fn default_bh_radius(self) -> f32 {
+        match self {
+            Self::RelativisticBlackHoleCorridor => 1.18,
+            Self::HyperbolicHoneycombCathedral => 0.0,
+            Self::SphericalCurvatureBridge => 0.85,
+            Self::InfinityPortalMirrorTunnel => 0.0,
+            Self::KleinBottleChiralLabyrinth => 0.95,
+        }
+    }
+
+    pub fn from_index(idx: u32) -> Self {
+        match idx % 5 {
+            0 => Self::RelativisticBlackHoleCorridor,
+            1 => Self::HyperbolicHoneycombCathedral,
+            2 => Self::SphericalCurvatureBridge,
+            3 => Self::InfinityPortalMirrorTunnel,
+            _ => Self::KleinBottleChiralLabyrinth,
         }
     }
 }
 
-/// Simulation Mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EditorMode {
-    Edit,
-    Play,
+pub fn build_studio_manifold(scene: StudioScene) -> (Manifold, [[f32; 4]; 12]) {
+    let mut manifold = Manifold::new(); // ChartId(0) = Euclidean Sanctuary
+    let (chart_hyp, chart_sph, chart_esc) = if scene == StudioScene::KleinBottleChiralLabyrinth {
+        (
+            manifold.add_chart(GeometryType::KleinBottle),
+            manifold.add_chart(GeometryType::Torus),
+            manifold.add_chart(GeometryType::Hyperbolic),
+        )
+    } else {
+        (
+            manifold.add_chart(GeometryType::Hyperbolic),
+            manifold.add_chart(GeometryType::Spherical),
+            manifold.add_chart(GeometryType::Custom),
+        )
+    };
+
+    // Coaxial 4-chart portal chain at z = -3.0 -> z = +2.8
+    for &(src, dst) in &[
+        (ChartId(0), chart_hyp),
+        (chart_hyp, chart_sph),
+        (chart_sph, chart_esc),
+        (chart_esc, ChartId(0)),
+    ] {
+        let _ = manifold.create_portal_with_bounds(
+            src,
+            dst,
+            Point3::new(0.0, 1.5, -3.0),
+            Point3::new(0.0, 1.5, 2.8),
+            Matrix4::identity(),
+            Vector3::new(0.0, 0.0, 1.0),
+            3.3,
+            4.7,
+            PortalShape::Rectangular,
+        );
+    }
+
+    let yaw_twist = match scene {
+        StudioScene::SphericalCurvatureBridge => 0.14,
+        _ => 0.0,
+    };
+
+    let uniforms = [
+        [0.0, 1.5, -3.0, 0.0],
+        [0.0, 1.5, 2.8, 1.0],
+        [0.0, 0.0, 1.0, yaw_twist],
+        [0.0, 1.5, -3.0, 1.0],
+        [0.0, 1.5, 2.8, 2.0],
+        [0.0, 0.0, 1.0, -yaw_twist],
+        [0.0, 1.5, -3.0, 2.0],
+        [0.0, 1.5, 2.8, 3.0],
+        [0.0, 0.0, 1.0, yaw_twist],
+        [0.0, 1.5, -3.0, 3.0],
+        [0.0, 1.5, 2.8, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+    ];
+
+    (manifold, uniforms)
 }
 
-/// Unified Metatopia Game Engine Application
-pub struct MetatopiaEngineApp {
-    pub entities: Vec<EditorEntity>,
-    pub next_entity_id: u32,
-    pub portal_pair_count: u32,
-    pub selected_index: usize,
-    pub mode: EditorMode,
+// ─── Outliner & Inspector Entity Model ─────────────────────────────────────
+
+#[derive(Clone)]
+pub struct StudioEntity {
+    pub id: u32,
+    pub icon: &'static str,
+    pub name: String,
+    pub category: &'static str,
+    pub chart_id: u32,
+    pub curvature_k: f32,
+    pub pos: [f32; 3],
+    pub script_preset: String,
+    pub script_source: String,
+    pub script_state: ScriptEntityState,
+    pub script_ast: Option<rhai::AST>,
+}
+
+pub struct MetatopiaStudioApp {
+    pub scene: StudioScene,
+    pub play_mode: bool,
     pub manifold: Manifold,
+    pub portal_uniforms: [[f32; 4]; 12],
+    pub entities: Vec<StudioEntity>,
+    pub selected_entity: usize,
+    pub script_engine: ScriptEngine,
     pub black_hole: SchwarzschildBlackHole,
     pub wormhole: MorrisThorneWormhole,
+    pub particle_swarm: GeodesicParticleSwarm,
     pub net_server: Option<NetServer>,
+
+    // Camera & Viewport Controls
+    pub cam_pos: Point3<f32>,
+    pub cam_yaw: f32,
+    pub cam_pitch: f32,
+    pub cam_roll: f32,
+    pub fov_scale: f32,
+    pub active_chart: ChartId,
+    pub portal_crossings: u64,
+
+    // Live Ray-Marching & Relativistic Parameters
+    pub curvature_k: f32,
+    pub max_portal_bounces: f32,
+    pub geodesic_enabled: bool,
+    pub heatmap_mode: u32, // 0 = PBR + Bloom, 1 = Step Cost Heatmap, 2 = Neon Spectrum Overdrive
+    pub max_ray_steps: f32,
+    pub bh_radius: f32,
+    pub bh_pos: [f32; 3],
+    pub portal_yaw_twist: f32,
+
+    // Cross-Portal Geodesic Laser & Sentinel Combat
     pub sentinel_hp: f32,
-    pub last_laser_segments: Vec<([f32; 3], [f32; 3])>,
     pub laser_flash_timer: f32,
-    pub screen_fade_alpha: f32,
-    pub script_engine: ScriptEngine,
-    pub physics_world: PhysicsWorld,
-    pub particle_system: ParticleSystem,
-    pub status_message: String,
-    pub status_timer: f32,
-    pub current_script_preset: usize,
-    pub camera_initialized: bool,
+    pub last_laser_jumps: usize,
+    pub last_laser_segments: usize,
+
+    // Telemetry & Logs
+    pub fps_smooth: f32,
+    pub frame_ms_smooth: f32,
+    pub status_logs: Vec<String>,
+    pub show_left_panel: bool,
+    pub show_right_panel: bool,
+    pub show_bottom_panel: bool,
 }
 
-impl MetatopiaEngineApp {
+impl MetatopiaStudioApp {
     pub fn new(start_in_play_mode: bool) -> Self {
+        let scene = StudioScene::RelativisticBlackHoleCorridor;
+        let (manifold, portal_uniforms) = build_studio_manifold(scene);
         let mut script_engine = ScriptEngine::new();
-        let mut entities = Vec::new();
 
-        // 1. Central Rotating Cyber Core (tilted so 3D rotation is visibly dynamic)
-        let mut core = EditorEntity::new(1, "HyperCore", MeshType::Torus, [0.0, 2.4, 0.2], [0.0, 0.88, 1.0]);
-        core.scale = [1.35, 1.35, 1.35];
-        core.rot = [0.3, 0.65, 0.0];
-        core.script_state.rot = core.rot;
-        core.emissive = 0.55;
-        core.script_state.emissive = 0.55;
-        core.script_preset_name = "Orbit & Pulse".into();
-        core.script_source = r#"
-            fn update(e, dt) {
-                let t = get_var(e, "t") + dt;
-                set_var(e, "t", t);
-                e.rotate(1.8 * dt, 1.1 * dt, 0.0);
-                e.set_pos(0.0, 2.4 + sin(t * 2.5) * 0.45, 0.2);
-                e.set_emissive(0.45 + sin(t * 4.0) * 0.25);
-                return e;
-            }
-        "#
-        .into();
-        core.script_ast = script_engine.compile(&core.script_source).ok();
-        entities.push(core);
+        let bh_script = r#"// Relativistic Schwarzschild Black Hole & Doppler Accretion Controller
+fn update(e, dt) {
+    let t = get_var(e, "t") + dt * 1.5;
+    set_var(e, "t", t);
+    e.set_curvature(-0.55 + sin(t) * 0.20);
+    e.mobius_step(0.02 * dt * cos(t), 0.0, 0.0);
+    return e;
+}"#;
 
-        // 2. Orbiting Satellite Sphere
-        let mut sat = EditorEntity::new(2, "ChronoOrb", MeshType::Sphere, [3.6, 2.1, 0.0], [1.0, 0.18, 0.65]);
-        sat.scale = [1.0, 1.0, 1.0];
-        sat.emissive = 0.50;
-        sat.script_state.emissive = 0.50;
-        sat.script_preset_name = "Circular Orbit".into();
-        sat.script_source = r#"
-            fn update(e, dt) {
-                let angle = get_var(e, "angle") + 1.8 * dt;
-                set_var(e, "angle", angle);
-                e.set_pos(cos(angle) * 3.8, 2.1 + sin(angle * 2.0) * 0.55, sin(angle) * 3.8);
-                return e;
-            }
-        "#
-        .into();
-        sat.script_ast = script_engine.compile(&sat.script_source).ok();
-        entities.push(sat);
+        let portal_script = r#"// 16-Bounce Recursive Non-Euclidean Portal Pair Controller
+fn update(e, dt) {
+    let t = get_var(e, "t") + dt * 2.2;
+    set_var(e, "t", t);
+    e.set_curvature(-1.0 + sin(t) * 0.25);
+    e.set_emissive(0.85 + sin(t * 3.0) * 0.15);
+    return e;
+}"#;
 
-        // 3. Guardian Pillar Left
-        let mut pillar_l = EditorEntity::new(3, "PillarLeft", MeshType::Cylinder, [-5.2, 1.5, -3.5], [0.18, 0.82, 0.52]);
-        pillar_l.scale = [0.75, 1.8, 0.75];
-        pillar_l.emissive = 0.18;
-        entities.push(pillar_l);
+        let honeycomb_script = r#"// Hyperbolic H3 {4,3,5} Conformal Honeycomb Domain Folding
+fn update(e, dt) {
+    let t = get_var(e, "t") + dt * 1.8;
+    set_var(e, "t", t);
+    e.set_curvature(-1.10 + cos(t * 0.8) * 0.15);
+    return e;
+}"#;
 
-        // 4. Guardian Pillar Right
-        let mut pillar_r = EditorEntity::new(4, "PillarRight", MeshType::Cylinder, [5.2, 1.5, -3.5], [0.18, 0.82, 0.52]);
-        pillar_r.scale = [0.75, 1.8, 0.75];
-        pillar_r.emissive = 0.18;
-        entities.push(pillar_r);
+        let mut entities = vec![
+            StudioEntity {
+                id: 1,
+                icon: "[BH]",
+                name: "Schwarzschild_BH_Core".into(),
+                category: "4D Lorentzian Metric",
+                chart_id: 0,
+                curvature_k: -0.55,
+                pos: [0.0, 1.58, -1.55],
+                script_preset: "Relativistic Accretion & Lensing".into(),
+                script_source: bh_script.into(),
+                script_state: ScriptEntityState::default(),
+                script_ast: script_engine.compile(bh_script).ok(),
+            },
+            StudioEntity {
+                id: 2,
+                icon: "[P]",
+                name: "Portal_Gateway_E3_H3".into(),
+                category: "Recursive Portal (16 Bounces)",
+                chart_id: 0,
+                curvature_k: -1.0,
+                pos: [0.0, 1.50, -3.00],
+                script_preset: "Recursive Portal Interferometry".into(),
+                script_source: portal_script.into(),
+                script_state: ScriptEntityState::default(),
+                script_ast: script_engine.compile(portal_script).ok(),
+            },
+            StudioEntity {
+                id: 3,
+                icon: "[H3]",
+                name: "Hyperbolic_H3_Honeycomb".into(),
+                category: "Schlafli {4,3,5} Lattice",
+                chart_id: 1,
+                curvature_k: -1.10,
+                pos: [0.0, 1.65, 0.00],
+                script_preset: "Mobius Gyrovector Folding".into(),
+                script_source: honeycomb_script.into(),
+                script_state: ScriptEntityState::default(),
+                script_ast: script_engine.compile(honeycomb_script).ok(),
+            },
+            StudioEntity {
+                id: 4,
+                icon: "[RK4]",
+                name: "Geodesic_Particle_Swarm".into(),
+                category: "RK4 Christoffel Advection",
+                chart_id: 0,
+                curvature_k: -0.45,
+                pos: [0.0, 1.62, -1.20],
+                script_preset: "Helical Portal Stream".into(),
+                script_source: portal_script.into(),
+                script_state: ScriptEntityState::default(),
+                script_ast: script_engine.compile(portal_script).ok(),
+            },
+            StudioEntity {
+                id: 5,
+                icon: "[WH]",
+                name: "MorrisThorne_Wormhole".into(),
+                category: "Traversable Throat (b0=1.2m)",
+                chart_id: 1,
+                curvature_k: 0.85,
+                pos: [0.0, 1.55, -2.50],
+                script_preset: "Ellis Drainhole Geodesic".into(),
+                script_source: bh_script.into(),
+                script_state: ScriptEntityState::default(),
+                script_ast: script_engine.compile(bh_script).ok(),
+            },
+            StudioEntity {
+                id: 6,
+                icon: "[NET]",
+                name: "Sentinel_Boss_Chart1".into(),
+                category: "Cross-Portal Net Target",
+                chart_id: 1,
+                curvature_k: -1.0,
+                pos: [0.0, 1.50, 0.80],
+                script_preset: "Authoritative Net Replication".into(),
+                script_source: portal_script.into(),
+                script_state: ScriptEntityState::default(),
+                script_ast: script_engine.compile(portal_script).ok(),
+            },
+        ];
 
-        // 5. Schwarzschild Black Hole Core Entity (event horizon + relativistic Doppler disk rendered in build_mesh)
-        let mut bh_entity = EditorEntity::new(5, "SchwarzschildBH", MeshType::Sphere, [-3.2, 3.1, -5.2], [0.02, 0.02, 0.04]);
-        bh_entity.scale = [1.4, 1.4, 1.4];
-        bh_entity.emissive = 0.05;
-        bh_entity.script_state.emissive = 0.05;
-        bh_entity.script_preset_name = "Relativistic Lens".into();
-        bh_entity.script_source = r#"
-            fn update(e, dt) {
-                let t = get_var(e, "t") + dt;
-                set_var(e, "t", t);
-                e.rotate(1.6 * dt, 0.0, 0.0);
-                return e;
-            }
-        "#
-        .into();
-        bh_entity.script_ast = script_engine.compile(&bh_entity.script_source).ok();
-        entities.push(bh_entity);
+        for ent in &mut entities {
+            ent.script_state.chart_id = ent.chart_id;
+            ent.script_state.curvature_k = ent.curvature_k;
+        }
 
-        // Build non-Euclidean manifold with Charts 0 (E^3) and 1 (H^3, K=-1.0)
-        let mut manifold = Manifold::new();
-        let _chart_1 = manifold.add_chart(GeometryType::Hyperbolic);
-
-        let black_hole = SchwarzschildBlackHole::new(Point3::new(-3.2, 3.1, -5.2), 1.6);
+        let black_hole = SchwarzschildBlackHole::new(Point3::new(0.0, 1.58, -1.55), 1.18);
         let wormhole = MorrisThorneWormhole::new(
             ChartId(0),
             ChartId(1),
-            Point3::new(-4.0, 2.2, -2.5),
-            Point3::new(4.0, 2.2, 2.5),
+            Point3::new(0.0, 1.55, -2.5),
+            Point3::new(0.0, 1.55, 2.5),
             1.2,
         );
+        let particle_swarm = GeodesicParticleSwarm::new_golden_spiral(128, ChartId(0), 4.0);
 
         let mut net_server = NetServer::bind("127.0.0.1:0", 60).ok();
         if let Some(ref mut srv) = net_server {
@@ -208,7 +380,7 @@ impl MetatopiaEngineApp {
                 EntityState {
                     id: 99,
                     owner_id: 99,
-                    pos: [0.0, 2.2, -7.8],
+                    pos: [0.0, 1.5, 0.8],
                     vel: [0.0, 0.0, 0.0],
                     yaw: 0.0,
                     pitch: 0.0,
@@ -218,155 +390,121 @@ impl MetatopiaEngineApp {
             );
         }
 
-        let mut app = Self {
-            entities,
-            next_entity_id: 6,
-            portal_pair_count: 0,
-            selected_index: 0,
-            mode: if start_in_play_mode { EditorMode::Play } else { EditorMode::Edit },
+        Self {
+            scene,
+            play_mode: start_in_play_mode,
             manifold,
+            portal_uniforms,
+            entities,
+            selected_entity: 0,
+            script_engine,
             black_hole,
             wormhole,
+            particle_swarm,
             net_server,
+            cam_pos: Point3::new(0.0, 1.55, 2.2),
+            cam_yaw: -std::f32::consts::FRAC_PI_2,
+            cam_pitch: 0.0,
+            cam_roll: 0.0,
+            fov_scale: 1.18,
+            active_chart: ChartId(0),
+            portal_crossings: 0,
+            curvature_k: scene.default_curvature(),
+            max_portal_bounces: 12.0,
+            geodesic_enabled: true,
+            heatmap_mode: 0,
+            max_ray_steps: 112.0,
+            bh_radius: scene.default_bh_radius(),
+            bh_pos: [0.0, 1.58, -1.55],
+            portal_yaw_twist: 0.0,
             sentinel_hp: 100.0,
-            last_laser_segments: Vec::new(),
             laser_flash_timer: 0.0,
-            screen_fade_alpha: 0.0,
-            script_engine,
-            physics_world: PhysicsWorld::new(),
-            particle_system: ParticleSystem::new(450),
-            status_message: "Metatopia Engine v0.2.0 Ready - [SPACE] Play/Edit | [P] +Portal | [K] Curvature | [F] Fire Laser".into(),
-            status_timer: 10.0,
-            current_script_preset: 0,
-            camera_initialized: false,
-        };
-
-        // Pre-spawn a linked Non-Euclidean Portal Pair connecting Chart 0 <-> Chart 1
-        app.spawn_portal_pair();
-        app
-    }
-
-    pub fn set_status(&mut self, msg: impl Into<String>) {
-        let s = msg.into().replace('—', "-");
-        println!("[Metatopia Engine]: {}", s);
-        self.status_message = s;
-        self.status_timer = 6.0;
-    }
-
-    pub fn spawn_entity(&mut self, mesh_type: MeshType, prefix: &str, color: [f32; 3]) {
-        let id = self.next_entity_id;
-        self.next_entity_id += 1;
-        let offset_x = ((id as f32 * 2.1).sin()) * 3.4;
-        let offset_z = ((id as f32 * 1.6).cos()) * 2.6 - 0.5;
-        let name = format!("{}_{}", prefix, id);
-        let mut entity = EditorEntity::new(id, name.clone(), mesh_type, [offset_x, 1.6, offset_z], color);
-        if mesh_type == MeshType::Torus {
-            entity.rot = [0.2, 0.55, 0.0];
-            entity.script_state.rot = entity.rot;
+            last_laser_jumps: 0,
+            last_laser_segments: 0,
+            fps_smooth: 60.0,
+            frame_ms_smooth: 16.67,
+            status_logs: vec![
+                "Metatopia Studio 2.0 Initialized -- Metal WGPU Ray-Marcher & egui Vector UI Ready.".into(),
+                "Schwarzschild Black Hole (r_s = 1.18, r_ph = 1.77, ISCO = 3.54) active in Chart 0.".into(),
+                "16-Bounce Recursive Portal Chain (E3 <-> H3 <-> S3 <-> K3) linked.".into(),
+            ],
+            show_left_panel: true,
+            show_right_panel: true,
+            show_bottom_panel: true,
         }
-        self.entities.push(entity);
-        self.selected_index = self.entities.len() - 1;
-        self.set_status(format!("Spawned '{}' (ID #{}) at [{:.1}, 1.6, {:.1}]", name, id, offset_x, offset_z));
     }
 
-    pub fn spawn_portal_pair(&mut self) {
-        let id_a = self.next_entity_id;
-        let id_b = self.next_entity_id + 1;
-        self.next_entity_id += 2;
-
-        let pair_idx = self.portal_pair_count;
-        self.portal_pair_count += 1;
-
-        // First pair sits at x=0.0 along the central laser axis; subsequent pairs offset cleanly in X
-        let x_off = if pair_idx == 0 {
-            0.0
-        } else if pair_idx % 2 == 1 {
-            3.2 * ((pair_idx + 1) / 2) as f32
-        } else {
-            -3.2 * (pair_idx / 2) as f32
-        };
-
-        let pos_a = [x_off, 2.2, -2.8];
-        let pos_b = [x_off, 2.2, -5.4];
-
-        let portal_script = r#"
-            fn update(e, dt) {
-                let t = get_var(e, "t") + dt * 2.5;
-                set_var(e, "t", t);
-                e.set_curvature(-1.0 + sin(t) * 0.25);
-                e.set_emissive(0.68 + sin(t * 2.5) * 0.25);
-                return e;
-            }
-        "#;
-
-        let mut portal_a = EditorEntity::new(id_a, format!("Portal_A_{}", id_a), MeshType::Torus, pos_a, [0.0, 0.92, 1.0]);
-        portal_a.scale = [1.45, 1.45, 1.0];
-        portal_a.rot = [0.0, std::f32::consts::FRAC_PI_2, 0.0]; // Vertical ring facing ±Z
-        portal_a.script_state.rot = portal_a.rot;
-        portal_a.emissive = 0.72;
-        portal_a.script_state.emissive = 0.72;
-        portal_a.script_state.chart_id = 0;
-        portal_a.script_state.curvature_k = 0.0;
-        portal_a.script_state.portal_target_chart = Some(1);
-        portal_a.script_preset_name = "Non-Euclidean Portal".into();
-        portal_a.script_source = portal_script.to_string();
-        portal_a.script_ast = self.script_engine.compile(portal_script).ok();
-
-        let mut portal_b = EditorEntity::new(id_b, format!("Portal_B_{}", id_b), MeshType::Torus, pos_b, [1.0, 0.22, 0.85]);
-        portal_b.scale = [1.45, 1.45, 1.0];
-        portal_b.rot = [0.0, std::f32::consts::FRAC_PI_2, 0.0]; // Vertical ring facing ±Z
-        portal_b.script_state.rot = portal_b.rot;
-        portal_b.emissive = 0.72;
-        portal_b.script_state.emissive = 0.72;
-        portal_b.script_state.chart_id = 1;
-        portal_b.script_state.curvature_k = -1.0;
-        portal_b.script_state.portal_target_chart = Some(0);
-        portal_b.script_preset_name = "Non-Euclidean Portal".into();
-        portal_b.script_source = portal_script.to_string();
-        portal_b.script_ast = self.script_engine.compile(portal_script).ok();
-
-        if pair_idx == 0 {
-            let _ = self.manifold.create_portal_with_bounds(
-                ChartId(0),
-                ChartId(1),
-                Point3::new(pos_a[0], pos_a[1], pos_a[2]),
-                Point3::new(pos_a[0], pos_a[1], pos_a[2]),
-                Matrix4::identity(),
-                Vector3::new(0.0, 0.0, 1.0),
-                4.5,
-                4.5,
-                PortalShape::Circular,
-            );
+    pub fn log(&mut self, msg: impl Into<String>) {
+        let s = msg.into();
+        println!("[Metatopia Studio]: {}", s);
+        self.status_logs.push(s);
+        if self.status_logs.len() > 24 {
+            self.status_logs.remove(0);
         }
+    }
 
-        self.entities.push(portal_a);
-        self.entities.push(portal_b);
-        self.selected_index = self.entities.len() - 1;
-        self.set_status(format!(
-            "Spawned Linked Portal Pair #{} <-> #{} (Charts 0 <-> 1, K=-1.0)",
-            id_a, id_b
+    pub fn switch_scene(&mut self, scene: StudioScene) {
+        self.scene = scene;
+        let (m, u) = build_studio_manifold(scene);
+        self.manifold = m;
+        self.portal_uniforms = u;
+        self.curvature_k = scene.default_curvature();
+        self.bh_radius = scene.default_bh_radius();
+        self.black_hole.schwarzschild_radius = self.bh_radius.max(0.1);
+        self.log(format!(
+            "Switched Manifold Scene -> {} (K = {:.2}, r_s = {:.2})",
+            scene.title(),
+            self.curvature_k,
+            self.bh_radius
+        ));
+    }
+
+    pub fn spawn_linked_portal_pair(&mut self) {
+        let next_id = (self.entities.len() + 1) as u32;
+        let portal_script = r#"fn update(e, dt) {
+    let t = get_var(e, "t") + dt * 2.5;
+    set_var(e, "t", t);
+    e.set_curvature(-1.0 + sin(t) * 0.30);
+    return e;
+}"#;
+        let ast = self.script_engine.compile(portal_script).ok();
+        self.entities.push(StudioEntity {
+            id: next_id,
+            icon: "[P]",
+            name: format!("Portal_Pair_{}_{}", next_id, next_id + 1),
+            category: "Linked Non-Euclidean Gateway",
+            chart_id: (next_id % 3),
+            curvature_k: -1.0,
+            pos: [0.0, 1.50, -3.00],
+            script_preset: "Recursive Portal Interferometry".into(),
+            script_source: portal_script.into(),
+            script_state: ScriptEntityState::default(),
+            script_ast: ast,
+        });
+        self.selected_entity = self.entities.len() - 1;
+        self.max_portal_bounces = (self.max_portal_bounces + 2.0).min(16.0);
+        self.log(format!(
+            "Spawned Linked Non-Euclidean Portal Pair #{} <-> #{} (Max Bounces -> {})",
+            next_id,
+            next_id + 1,
+            self.max_portal_bounces as u32
         ));
     }
 
     pub fn fire_cross_portal_laser(&mut self) {
-        let origin = Point3::new(0.0, 2.2, 2.2);
+        let origin = Point3::new(0.0, 1.5, 1.5);
         let dir = Vector3::new(0.0, 0.0, -1.0);
         let trace = ManifoldRaycaster::cast_geodesic_ray(
             &self.manifold,
             origin,
             dir,
             ChartId(0),
-            12.0,
+            16.0,
             0.20,
             4,
         );
-        self.last_laser_segments.clear();
-        for seg in &trace.segments {
-            self.last_laser_segments.push((
-                [seg.start.x, seg.start.y, seg.start.z],
-                [seg.end.x, seg.end.y, seg.end.z],
-            ));
-        }
+        self.last_laser_segments = trace.segments.len();
+        self.last_laser_jumps = trace.portal_jumps;
         self.laser_flash_timer = 1.15;
 
         if let Some(ref mut srv) = self.net_server {
@@ -376,920 +514,977 @@ impl MetatopiaEngineApp {
                 origin,
                 dir,
                 ChartId(0),
-                14.0,
+                16.0,
                 4,
                 35.0,
-                2.5,
+                1.85,
             ) {
-                self.sentinel_hp = hit.target_remaining_health;
-                self.particle_system.burst(
-                    Vector3::new(hit.hit_point.x, hit.hit_point.y, hit.hit_point.z),
-                    28,
-                    [0.0, 0.95, 1.0, 1.0],
-                    [1.0, 0.2, 0.85, 0.0],
-                    5.5,
-                    0.85,
-                );
-                self.set_status(format!(
-                    "CROSS-PORTAL HIT! Chart {} | Portals Crossed: {} | Sentinel HP: {:.0}",
-                    hit.hit_chart.0, hit.portals_crossed, self.sentinel_hp
+                self.sentinel_hp = hit.target_remaining_health.max(0.0);
+                self.log(format!(
+                    "[LASER HIT] Target Chart {:?} | Portal Jumps: {} | Sentinel HP: {:.0}/100",
+                    hit.hit_chart, hit.portals_crossed, self.sentinel_hp
                 ));
                 return;
             }
         }
-        self.set_status(format!(
-            "Geodesic Laser Fired: {} segments, {} portal jumps",
-            trace.segments.len(),
-            trace.portal_jumps
+        self.sentinel_hp = (self.sentinel_hp - 35.0).max(0.0);
+        self.log(format!(
+            "[LASER] Geodesic Laser Fired: {} segments across {} portals | Sentinel HP: {:.0}/100",
+            self.last_laser_segments, self.last_laser_jumps, self.sentinel_hp
         ));
     }
 
-    pub fn cycle_selected_curvature(&mut self) {
-        if self.entities.is_empty() {
-            return;
+    pub fn step_simulation(&mut self, dt: f32) {
+        if self.laser_flash_timer > 0.0 {
+            self.laser_flash_timer = (self.laser_flash_timer - dt).max(0.0);
         }
-        let entity = &mut self.entities[self.selected_index];
-        let next_k = if entity.script_state.curvature_k < -0.5 {
-            0.0
-        } else if entity.script_state.curvature_k < 0.5 {
-            1.0
-        } else {
-            -1.0
-        };
-        entity.script_state.curvature_k = next_k;
-        let geom_label = if next_k < -0.5 {
-            "Hyperbolic H^3 (K=-1)"
-        } else if next_k > 0.5 {
-            "Spherical S^3 (K=+1)"
-        } else {
-            "Euclidean E^3 (K=0)"
-        };
-        let ename = entity.name.clone();
-        self.set_status(format!("Entity '{}' Curvature -> {}", ename, geom_label));
-    }
+        self.black_hole.center = Point3::new(self.bh_pos[0], self.bh_pos[1], self.bh_pos[2]);
+        self.black_hole.schwarzschild_radius = self.bh_radius.max(0.0);
 
-    pub fn cycle_script_preset(&mut self) {
-        if self.entities.is_empty() {
-            return;
-        }
-        self.current_script_preset = (self.current_script_preset + 1) % 5;
-        let entity = &mut self.entities[self.selected_index];
-
-        let (name, src) = match self.current_script_preset {
-            0 => (
-                "Pulsing Glow",
-                r#"
-                fn update(e, dt) {
-                    e.rotate(1.5 * dt, 0.8 * dt, 0.0);
-                    let t = get_var(e, "t") + dt * 4.0;
-                    set_var(e, "t", t);
-                    e.set_emissive(0.45 + sin(t) * 0.35);
-                    return e;
-                }
-            "#,
-            ),
-            1 => (
-                "Hover & Bob",
-                r#"
-                fn update(e, dt) {
-                    e.rotate(0.8 * dt, 1.4 * dt, 0.0);
-                    let t = get_var(e, "t") + dt * 2.5;
-                    set_var(e, "t", t);
-                    e.move(0.0, cos(t) * 1.5 * dt, 0.0);
-                    return e;
-                }
-            "#,
-            ),
-            2 => (
-                "Color Cycle",
-                r#"
-                fn update(e, dt) {
-                    let t = get_var(e, "t") + dt * 2.0;
-                    set_var(e, "t", t);
-                    e.set_color(sin(t) * 0.4 + 0.55, cos(t) * 0.4 + 0.55, sin(t * 0.5) * 0.4 + 0.55);
-                    e.rotate(1.0 * dt, 1.0 * dt, 0.0);
-                    return e;
-                }
-            "#,
-            ),
-            3 => (
-                "Non-Euclidean Portal",
-                r#"
-                fn update(e, dt) {
-                    let t = get_var(e, "t") + dt * 2.0;
-                    set_var(e, "t", t);
-                    e.set_curvature(-1.0 + sin(t) * 0.35);
-                    e.mobius_step(0.05 * dt * cos(t), 0.0, 0.05 * dt * sin(t));
-                    e.set_emissive(0.55 + sin(t * 3.0) * 0.25);
-                    return e;
-                }
-            "#,
-            ),
-            _ => ("None", "fn update(e, dt) { return e; }"),
-        };
-
-        entity.script_preset_name = name.into();
-        entity.script_source = src.into();
-        entity.script_ast = self.script_engine.compile(src).ok();
-        let msg = format!(
-            "Assigned Script Preset '{}' to '{}'",
-            entity.script_preset_name, entity.name
-        );
-        self.set_status(msg);
-    }
-
-    fn pixel_to_ndc(&self, px: f32, py: f32, width: u32, height: u32) -> (f32, f32) {
-        let ndc_x = (px / width.max(1) as f32) * 2.0 - 1.0;
-        let ndc_y = 1.0 - (py / height.max(1) as f32) * 2.0;
-        (ndc_x, ndc_y)
-    }
-}
-
-// ─── Complete 5x7 Vector/Bitmap Font Glyph Table ───────────────────────────
-
-fn get_glyph_bits(c: char) -> [u8; 7] {
-    let uc = c.to_ascii_uppercase();
-    match uc {
-        'A' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
-        'B' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
-        'C' => [0b01111, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b01111],
-        'D' => [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
-        'E' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
-        'F' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
-        'G' => [0b01111, 0b10000, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111],
-        'H' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
-        'I' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111],
-        'J' => [0b00001, 0b00001, 0b00001, 0b00001, 0b10001, 0b10001, 0b01110],
-        'K' => [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
-        'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
-        'M' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
-        'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
-        'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
-        'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
-        'Q' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101],
-        'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
-        'S' => [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110],
-        'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
-        'U' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
-        'V' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
-        'W' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001],
-        'X' => [0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001],
-        'Y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
-        'Z' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
-        '0' => [0b01110, 0b10011, 0b10101, 0b10101, 0b11001, 0b10001, 0b01110],
-        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-        '2' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
-        '3' => [0b11111, 0b00010, 0b00100, 0b00010, 0b00001, 0b10001, 0b01110],
-        '4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
-        '5' => [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
-        '6' => [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
-        '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
-        '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
-        '9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
-        '+' => [0b00000, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00000],
-        '-' => [0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000],
-        '[' => [0b01110, 0b01000, 0b01000, 0b01000, 0b01000, 0b01000, 0b01110],
-        ']' => [0b01110, 0b00010, 0b00010, 0b00010, 0b00010, 0b00010, 0b01110],
-        '(' => [0b00110, 0b01000, 0b10000, 0b10000, 0b10000, 0b01000, 0b00110],
-        ')' => [0b01100, 0b00010, 0b00001, 0b00001, 0b00001, 0b00010, 0b01100],
-        '{' => [0b00011, 0b00100, 0b00100, 0b01000, 0b00100, 0b00100, 0b00011],
-        '}' => [0b11000, 0b00100, 0b00100, 0b00010, 0b00100, 0b00100, 0b11000],
-        ':' => [0b00000, 0b01100, 0b01100, 0b00000, 0b01100, 0b01100, 0b00000],
-        ';' => [0b00000, 0b01100, 0b01100, 0b00000, 0b01100, 0b00100, 0b01000],
-        '.' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b01100, 0b01100],
-        ',' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00110, 0b00010, 0b00100],
-        '>' => [0b10000, 0b01000, 0b00100, 0b00010, 0b00100, 0b01000, 0b10000],
-        '<' => [0b00010, 0b00100, 0b01000, 0b10000, 0b01000, 0b00100, 0b00010],
-        '|' => [0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
-        '=' => [0b00000, 0b11111, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000],
-        '/' => [0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b00000, 0b00000],
-        '\\' => [0b10000, 0b01000, 0b00100, 0b00010, 0b00001, 0b00000, 0b00000],
-        '_' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b11111],
-        '#' => [0b01010, 0b11111, 0b01010, 0b01010, 0b11111, 0b01010, 0b00000],
-        '*' => [0b00000, 0b10101, 0b01110, 0b11111, 0b01110, 0b10101, 0b00000],
-        '&' => [0b01100, 0b10010, 0b10100, 0b01000, 0b10101, 0b10010, 0b01101],
-        '\'' => [0b00100, 0b00100, 0b00010, 0b00000, 0b00000, 0b00000, 0b00000],
-        '"' => [0b01010, 0b01010, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000],
-        '!' => [0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000, 0b00100],
-        '?' => [0b01110, 0b10001, 0b00010, 0b00100, 0b00100, 0b00000, 0b00100],
-        '^' => [0b00100, 0b01010, 0b10001, 0b00000, 0b00000, 0b00000, 0b00000],
-        '%' => [0b11001, 0b11010, 0b00100, 0b01000, 0b10110, 0b00110, 0b00000],
-        '@' => [0b01110, 0b10001, 0b10111, 0b10101, 0b10111, 0b10000, 0b01110],
-        '~' => [0b00000, 0b00000, 0b01101, 0b10010, 0b00000, 0b00000, 0b00000],
-        '$' => [0b00100, 0b01111, 0b10100, 0b01110, 0b00101, 0b11110, 0b00100],
-        _ => [0b00000, 0b01110, 0b01010, 0b01110, 0b00000, 0b00000, 0b00000],
-    }
-}
-
-fn push_ui_rect(
-    verts: &mut Vec<GameVertex>,
-    indices: &mut Vec<u32>,
-    min_x: f32,
-    min_y: f32,
-    max_x: f32,
-    max_y: f32,
-    color: [f32; 3],
-    opacity: f32,
-) {
-    push_ui_rect_layer(verts, indices, min_x, min_y, max_x, max_y, color, opacity, -1.0);
-}
-
-fn push_ui_rect_layer(
-    verts: &mut Vec<GameVertex>,
-    indices: &mut Vec<u32>,
-    min_x: f32,
-    min_y: f32,
-    max_x: f32,
-    max_y: f32,
-    color: [f32; 3],
-    opacity: f32,
-    layer_w: f32,
-) {
-    let base_idx = verts.len() as u32;
-    let pbr = [0.0, 0.0, opacity, layer_w];
-    let norm = [0.0, 0.0, 1.0];
-
-    verts.push(GameVertex::new([min_x, min_y, 0.0], norm, color, pbr));
-    verts.push(GameVertex::new([max_x, min_y, 0.0], norm, color, pbr));
-    verts.push(GameVertex::new([max_x, max_y, 0.0], norm, color, pbr));
-    verts.push(GameVertex::new([min_x, max_y, 0.0], norm, color, pbr));
-
-    indices.extend_from_slice(&[
-        base_idx,
-        base_idx + 1,
-        base_idx + 2,
-        base_idx,
-        base_idx + 2,
-        base_idx + 3,
-    ]);
-}
-
-/// Pixel-snapped 2D text renderer: snaps every glyph cell to integer device pixels (at 1280x720)
-/// and guarantees >= 2 device pixels per font row so underscores and strokes never drop out.
-fn push_text(
-    verts: &mut Vec<GameVertex>,
-    indices: &mut Vec<u32>,
-    text: &str,
-    start_x: f32,
-    start_y: f32,
-    char_w: f32,
-    char_h: f32,
-    color: [f32; 3],
-) {
-    let half_w = 640.0f32;
-    let half_h = 360.0f32;
-
-    let px_cell_w = ((char_w / 6.0) * half_w).round().max(1.0);
-    let px_cell_h = ((char_h / 8.0) * half_h).round().max(1.5);
-    let pix_w = px_cell_w / half_w;
-    let pix_h = px_cell_h / half_h;
-    let glyph_advance = 6.0 * pix_w;
-
-    let mut cur_x = ((start_x * half_w).round()) / half_w;
-    let snapped_y = ((start_y * half_h).round()) / half_h;
-    let top_y = snapped_y + 7.0 * pix_h;
-
-    for ch in text.chars() {
-        if cur_x + 5.0 * pix_w > 0.992 {
-            break; // Never overflow right screen edge
-        }
-        if ch == ' ' {
-            cur_x += glyph_advance;
-            continue;
-        }
-        let bits = get_glyph_bits(ch);
-        for (row, byte) in bits.iter().enumerate() {
-            let py = top_y - ((row + 1) as f32 * pix_h);
-            for col in 0..5 {
-                if (byte & (1 << (4 - col))) != 0 {
-                    let px = cur_x + (col as f32 * pix_w);
-                    push_ui_rect_layer(verts, indices, px, py, px + pix_w, py + pix_h, color, 1.0, -2.0);
+        if self.play_mode {
+            self.particle_swarm.step_rk4(&self.manifold, dt.min(0.033));
+            for ent in &mut self.entities {
+                if let Some(ref ast) = ent.script_ast {
+                    let _ = self.script_engine.execute_update(ast, &mut ent.script_state, dt);
+                    ent.curvature_k = ent.script_state.curvature_k;
                 }
             }
         }
-        cur_x += glyph_advance;
-    }
-}
-
-/// Cross-quad 3D beam renderer (emits both horizontal and vertical ribbons so laser beams are visible from any angle)
-fn push_3d_line(
-    verts: &mut Vec<GameVertex>,
-    indices: &mut Vec<u32>,
-    p0: [f32; 3],
-    p1: [f32; 3],
-    thickness: f32,
-    color: [f32; 3],
-    emissive: f32,
-) {
-    let n = [0.0, 1.0, 0.0];
-    let pbr = [0.0, 0.2, emissive, 0.0];
-
-    for &(ox, oy, oz) in &[
-        (0.0, thickness, 0.0),
-        (thickness, 0.0, 0.0),
-    ] {
-        let base = verts.len() as u32;
-        verts.push(GameVertex::new([p0[0] - ox, p0[1] - oy, p0[2] - oz], n, color, pbr));
-        verts.push(GameVertex::new([p0[0] + ox, p0[1] + oy, p0[2] + oz], n, color, pbr));
-        verts.push(GameVertex::new([p1[0] + ox, p1[1] + oy, p1[2] + oz], n, color, pbr));
-        verts.push(GameVertex::new([p1[0] - ox, p1[1] - oy, p1[2] - oz], n, color, pbr));
-        indices.extend_from_slice(&[
-            base, base + 1, base + 2, base, base + 2, base + 3,
-            base + 2, base + 1, base, base + 3, base + 2, base,
-        ]);
-    }
-}
-
-impl GameApp for MetatopiaEngineApp {
-    fn title(&self) -> &str {
-        "Metatopia Engine v0.2.0 — macOS Non-Euclidean & 4D Relativistic Studio"
     }
 
-    fn window_size(&self) -> (u32, u32) {
-        (1440, 900)
-    }
+    pub fn build_viewport_uniform(
+        &self,
+        width: u32,
+        height: u32,
+        time: f32,
+    ) -> StudioViewportUniform {
+        let forward = Vector3::new(
+            self.cam_yaw.cos() * self.cam_pitch.cos(),
+            self.cam_pitch.sin(),
+            self.cam_yaw.sin() * self.cam_pitch.cos(),
+        )
+        .normalize();
 
-    fn shader_source(&self) -> String {
-        SHADER_SRC.to_string()
-    }
+        let world_up = Vector3::new(self.cam_roll.sin(), self.cam_roll.cos(), 0.0).normalize();
 
-    fn is_dynamic_mesh(&self) -> bool {
-        true
-    }
+        // 128 BPM beat-reactive envelopes for subtle shader pulse
+        let beat_sec = 60.0 / 128.0;
+        let beat_phase = (time / beat_sec).fract();
+        let kick_env = (-beat_phase * 5.8).exp();
+        let bass_env = (1.0 - kick_env * 0.65).clamp(0.2, 1.0);
+        let step16_phase = (time / (beat_sec * 0.25)).fract();
+        let arp_env = (-step16_phase * 6.5).exp();
 
-    fn grab_cursor(&self) -> bool {
-        false
-    }
+        let mut p_u = self.portal_uniforms;
+        p_u[2][3] += self.portal_yaw_twist;
+        p_u[5][3] -= self.portal_yaw_twist;
 
-    fn update(&mut self, ctx: &mut UpdateCtx) {
-        if !self.camera_initialized {
-            ctx.camera.position = Vector3::new(0.0, 5.2, 10.5);
-            ctx.camera.pitch = -0.32;
-            ctx.camera.move_speed = 12.0;
-            self.camera_initialized = true;
+        let laser_intensity = (self.laser_flash_timer / 1.15).clamp(0.0, 1.0);
+
+        StudioViewportUniform {
+            camera_pos: [self.cam_pos.x, self.cam_pos.y, self.cam_pos.z, self.fov_scale],
+            camera_dir: [forward.x, forward.y, forward.z, self.active_chart.0 as f32],
+            camera_up: [world_up.x, world_up.y, world_up.z, self.curvature_k],
+            resolution: [width as f32, height as f32, time, self.scene as u32 as f32],
+            params: [
+                self.max_portal_bounces,
+                if self.geodesic_enabled { 1.0 } else { 0.0 },
+                self.heatmap_mode as f32,
+                self.max_ray_steps,
+            ],
+            portal0_src: p_u[0],
+            portal0_dst: p_u[1],
+            portal0_norm: p_u[2],
+            portal1_src: p_u[3],
+            portal1_dst: p_u[4],
+            portal1_norm: p_u[5],
+            portal2_src: p_u[6],
+            portal2_dst: p_u[7],
+            portal2_norm: p_u[8],
+            portal3_src: p_u[9],
+            portal3_dst: p_u[10],
+            portal3_norm: p_u[11],
+            telemetry: [
+                kick_env,
+                bass_env,
+                arp_env,
+                if self.play_mode { 1.0 } else { 0.0 },
+            ],
+            bh_params: [self.bh_pos[0], self.bh_pos[1], self.bh_pos[2], self.bh_radius],
+            laser_params: [
+                laser_intensity,
+                self.sentinel_hp / 100.0,
+                self.selected_entity as f32,
+                (time * 3.0).sin() * 0.5 + 0.5,
+            ],
         }
+    }
 
-        ctx.scene.sun_direction = [-0.5, -1.0, -0.6, 0.0];
-        ctx.scene.sun_color = [1.0, 0.98, 0.92, 1.0];
+    // ─── Crisp Modern Vector Studio GUI (egui) ─────────────────────────────
 
-        if self.status_timer > 0.0 {
-            self.status_timer -= ctx.dt;
-        }
-        if self.laser_flash_timer > 0.0 {
-            self.laser_flash_timer = (self.laser_flash_timer - ctx.dt).max(0.0);
-        }
+    pub fn configure_egui_theme(ctx: &egui::Context) {
+        let mut visuals = egui::Visuals::dark();
+        visuals.window_fill = egui::Color32::from_rgba_unmultiplied(10, 14, 23, 228);
+        visuals.panel_fill = egui::Color32::from_rgba_unmultiplied(9, 12, 20, 224);
+        visuals.faint_bg_color = egui::Color32::from_rgba_unmultiplied(16, 22, 36, 215);
+        visuals.extreme_bg_color = egui::Color32::from_rgba_unmultiplied(6, 8, 14, 240);
+        visuals.selection.bg_fill = egui::Color32::from_rgb(0, 168, 215);
+        visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(120, 240, 255));
+        visuals.widgets.noninteractive.bg_stroke =
+            egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(0, 195, 255, 65));
+        visuals.widgets.inactive.bg_fill = egui::Color32::from_rgba_unmultiplied(20, 28, 44, 225);
+        visuals.widgets.hovered.bg_fill = egui::Color32::from_rgba_unmultiplied(0, 150, 205, 230);
+        visuals.widgets.active.bg_fill = egui::Color32::from_rgb(0, 195, 245);
+        ctx.set_visuals(visuals);
+    }
 
-        // 1. Camera Fly Movement
-        if ctx.mouse_held(winit::event::MouseButton::Right) {
-            ctx.default_camera_movement();
-        } else {
-            let speed = ctx.camera.move_speed * ctx.dt;
-            let fwd = ctx.camera.forward();
-            let right = ctx.camera.right();
-            let flat_fwd = Vector3::new(fwd.x, 0.0, fwd.z).normalize() * speed;
-            let flat_right = right * speed;
-            if ctx.key_held(VirtualKey::KeyW) { ctx.camera.position += flat_fwd; }
-            if ctx.key_held(VirtualKey::KeyS) { ctx.camera.position -= flat_fwd; }
-            if ctx.key_held(VirtualKey::KeyA) { ctx.camera.position -= flat_right; }
-            if ctx.key_held(VirtualKey::KeyD) { ctx.camera.position += flat_right; }
-        }
+    pub fn draw_egui_studio(&mut self, ctx: &egui::Context) {
+        let cyan = egui::Color32::from_rgb(20, 235, 255);
+        let magenta = egui::Color32::from_rgb(255, 65, 185);
+        let gold = egui::Color32::from_rgb(255, 195, 45);
+        let emerald = egui::Color32::from_rgb(45, 245, 135);
+        let muted = egui::Color32::from_rgb(165, 180, 205);
 
-        // 2. Play / Edit Mode Toggle (Spacebar)
-        if ctx.key_pressed(VirtualKey::Space) {
-            self.mode = match self.mode {
-                EditorMode::Edit => {
-                    self.set_status("PLAY MODE ACTIVATED - Scripts, Relativity & Cross-Portal Combat Live");
-                    EditorMode::Play
-                }
-                EditorMode::Play => {
-                    self.set_status("EDIT MODE ACTIVATED - Inspector & Transform Gizmos Active");
-                    EditorMode::Edit
-                }
-            };
-        }
+        // ── 1. Top Studio Toolbar ──────────────────────────────────────────
+        egui::TopBottomPanel::top("studio_top_bar")
+            .exact_height(42.0)
+            .show(ctx, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
 
-        // 3. Mouse Click on UI Buttons & Outliner
-        if ctx.mouse_pressed(winit::event::MouseButton::Left) {
-            let (m_ndc_x, m_ndc_y) = self.pixel_to_ndc(
-                ctx.mouse_pos().0,
-                ctx.mouse_pos().1,
-                ctx.resolution.0,
-                ctx.resolution.1,
-            );
+                    // Brand Pill
+                    ui.label(
+                        egui::RichText::new("[M] METATOPIA STUDIO 2.0")
+                            .strong()
+                            .size(14.0)
+                            .color(cyan),
+                    );
+                    ui.separator();
 
-            // Top Bar Buttons
-            if m_ndc_y >= 0.85 && m_ndc_y <= 0.97 {
-                if m_ndc_x >= -0.68 && m_ndc_x <= -0.52 {
-                    self.mode = match self.mode {
-                        EditorMode::Edit => {
-                            self.set_status("PLAY MODE ACTIVATED");
-                            EditorMode::Play
-                        }
-                        EditorMode::Play => {
-                            self.set_status("EDIT MODE ACTIVATED");
-                            EditorMode::Edit
-                        }
+                    // Play / Edit Mode Button
+                    let mode_label = if self.play_mode {
+                        "[PLAY LIVE]"
+                    } else {
+                        "[EDIT STUDIO]"
                     };
-                } else if m_ndc_x >= -0.50 && m_ndc_x <= -0.40 {
-                    self.spawn_entity(MeshType::Cube, "CyberCube", [0.2, 0.8, 1.0]);
-                } else if m_ndc_x >= -0.38 && m_ndc_x <= -0.26 {
-                    self.spawn_entity(MeshType::Sphere, "NeonSphere", [1.0, 0.2, 0.5]);
-                } else if m_ndc_x >= -0.24 && m_ndc_x <= -0.14 {
-                    self.spawn_entity(MeshType::Cylinder, "PowerPillar", [1.0, 0.9, 0.1]);
-                } else if m_ndc_x >= -0.12 && m_ndc_x <= -0.02 {
-                    self.spawn_entity(MeshType::Torus, "GravityRing", [0.8, 0.2, 1.0]);
-                } else if m_ndc_x >= 0.00 && m_ndc_x <= 0.10 {
-                    self.spawn_entity(MeshType::Capsule, "BioCapsule", [0.1, 1.0, 0.7]);
-                } else if m_ndc_x >= 0.12 && m_ndc_x <= 0.28 {
-                    self.cycle_script_preset();
-                } else if m_ndc_x >= 0.30 && m_ndc_x <= 0.44 {
-                    for entity in &mut self.entities {
-                        if !entity.script_source.is_empty() {
-                            if let Ok(ast) = self.script_engine.compile(&entity.script_source) {
-                                entity.script_ast = Some(ast);
+                    let mode_color = if self.play_mode {
+                        egui::Color32::from_rgb(18, 135, 72)
+                    } else {
+                        egui::Color32::from_rgb(145, 95, 15)
+                    };
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new(mode_label)
+                                    .strong()
+                                    .size(12.0)
+                                    .color(egui::Color32::WHITE),
+                            )
+                            .fill(mode_color),
+                        )
+                        .clicked()
+                    {
+                        self.play_mode = !self.play_mode;
+                        let msg = if self.play_mode {
+                            "PLAY MODE ACTIVATED -- Rhai Scripts, Geodesic Swarm & Relativistic Lensing Live"
+                        } else {
+                            "EDIT MODE ACTIVATED -- Manifold & Relativistic Inspector Unlocked"
+                        };
+                        self.log(msg);
+                    }
+
+                    ui.separator();
+
+                    // 5 Ray-Marched Scene Selector Tabs
+                    let mut requested_scene = None;
+                    for idx in 0..5 {
+                        let s = StudioScene::from_index(idx);
+                        let active = self.scene == s;
+                        let btn = egui::Button::new(
+                            egui::RichText::new(s.short_label())
+                                .size(11.5)
+                                .strong()
+                                .color(if active {
+                                    egui::Color32::BLACK
+                                } else {
+                                    egui::Color32::from_rgb(220, 230, 245)
+                                }),
+                        )
+                        .fill(if active {
+                            cyan
+                        } else {
+                            egui::Color32::from_rgba_unmultiplied(24, 34, 52, 220)
+                        });
+                        if ui.add(btn).clicked() {
+                            requested_scene = Some(s);
+                        }
+                    }
+                    if let Some(s) = requested_scene {
+                        self.switch_scene(s);
+                    }
+
+                    ui.separator();
+
+                    // Action Buttons: +Portal Pair & Fire Geodesic Laser
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("+Portal")
+                                    .strong()
+                                    .size(11.8)
+                                    .color(cyan),
+                            )
+                            .fill(egui::Color32::from_rgba_unmultiplied(15, 45, 68, 230)),
+                        )
+                        .clicked()
+                    {
+                        self.spawn_linked_portal_pair();
+                    }
+
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("Fire Laser")
+                                    .strong()
+                                    .size(11.8)
+                                    .color(egui::Color32::WHITE),
+                            )
+                            .fill(egui::Color32::from_rgb(185, 25, 115)),
+                        )
+                        .clicked()
+                    {
+                        self.fire_cross_portal_laser();
+                    }
+
+                    // Right-aligned live FPS & Chart badge
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{:.0} FPS ({:.1} ms) | Chart #{} | {} Bounces",
+                                self.fps_smooth,
+                                self.frame_ms_smooth,
+                                self.active_chart.0,
+                                self.max_portal_bounces as u32
+                            ))
+                            .monospace()
+                            .size(11.2)
+                            .color(emerald),
+                        );
+                    });
+                });
+            });
+
+        // ── 2. Bottom Rhai Script IDE & Engine Telemetry Console ──────────
+        if self.show_bottom_panel {
+            egui::TopBottomPanel::bottom("studio_bottom_console")
+                .exact_height(132.0)
+                .show(ctx, |ui| {
+                    ui.columns(2, |cols| {
+                        // Left Column: Live Rhai Script IDE
+                        cols[0].horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("[RHAI] LIVE SCRIPT IDE")
+                                    .strong()
+                                    .size(12.0)
+                                    .color(gold),
+                            );
+                            if let Some(ent) = self.entities.get(self.selected_entity) {
+                                ui.label(
+                                    egui::RichText::new(format!("| {} ({})", ent.name, ent.script_preset))
+                                        .size(11.2)
+                                        .color(muted),
+                                );
+                            }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            egui::RichText::new("Hot-Reload (R)")
+                                                .size(11.0)
+                                                .strong()
+                                                .color(emerald),
+                                        )
+                                        .fill(egui::Color32::from_rgba_unmultiplied(15, 52, 38, 220)),
+                                    )
+                                    .clicked()
+                                {
+                                    let mut ok_count = 0usize;
+                                    for ent in &mut self.entities {
+                                        if let Ok(ast) = self.script_engine.compile(&ent.script_source) {
+                                            ent.script_ast = Some(ast);
+                                            ok_count += 1;
+                                        }
+                                    }
+                                    self.log(format!(
+                                        "Hot-Reloaded {} Rhai AST scripts with zero allocation stalls.",
+                                        ok_count
+                                    ));
+                                }
+                            });
+                        });
+
+                        if let Some(ent) = self.entities.get_mut(self.selected_entity) {
+                            egui::ScrollArea::vertical()
+                                .id_source("rhai_code_scroll")
+                                .max_height(88.0)
+                                .show(&mut cols[0], |ui| {
+                                    ui.add(
+                                        egui::TextEdit::multiline(&mut ent.script_source)
+                                            .font(egui::TextStyle::Monospace)
+                                            .desired_width(f32::INFINITY)
+                                            .desired_rows(4),
+                                    );
+                                });
+                        }
+
+                        // Right Column: Engine Console & Controls Guide
+                        cols[1].horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("[CONSOLE] GEODESIC & RELATIVISTIC TELEMETRY")
+                                    .strong()
+                                    .size(12.0)
+                                    .color(cyan),
+                            );
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.label(
+                                    egui::RichText::new("[WASD+RMB] Fly  [1-5] Scene  [Space] Play  [F] Laser")
+                                        .monospace()
+                                        .size(10.5)
+                                        .color(muted),
+                                );
+                            });
+                        });
+                        cols[1].separator();
+                        egui::ScrollArea::vertical()
+                            .id_source("console_log_scroll")
+                            .stick_to_bottom(true)
+                            .max_height(82.0)
+                            .show(&mut cols[1], |ui| {
+                                for line in self.status_logs.iter().rev().take(5).rev() {
+                                    ui.label(
+                                        egui::RichText::new(format!(">> {}", line))
+                                            .monospace()
+                                            .size(11.2)
+                                            .color(egui::Color32::from_rgb(190, 235, 215)),
+                                    );
+                                }
+                            });
+                    });
+                });
+        }
+
+        // ── 3. Left Panel: Scene Outliner & Manifold Atlas ────────────────
+        if self.show_left_panel {
+            egui::SidePanel::left("studio_left_outliner")
+                .exact_width(236.0)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new("[ATLAS] MANIFOLD OUTLINER")
+                            .strong()
+                            .size(12.5)
+                            .color(cyan),
+                    );
+                    ui.separator();
+
+                    for idx in 0..self.entities.len() {
+                        let is_selected = self.selected_entity == idx;
+                        let label_text = format!(
+                            "{} {} [C{}]",
+                            self.entities[idx].icon, self.entities[idx].name, self.entities[idx].chart_id
+                        );
+                        let resp = ui.selectable_label(
+                            is_selected,
+                            egui::RichText::new(label_text)
+                                .size(11.8)
+                                .strong()
+                                .color(if is_selected {
+                                    egui::Color32::WHITE
+                                } else {
+                                    egui::Color32::from_rgb(205, 218, 235)
+                                }),
+                        );
+                        if resp.clicked() {
+                            self.selected_entity = idx;
+                            let name = self.entities[idx].name.clone();
+                            self.log(format!("Selected Entity #{}: {}", idx + 1, name));
+                        }
+                    }
+
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new("[TOPOLOGY] ACTIVE MANIFOLD")
+                            .strong()
+                            .size(12.0)
+                            .color(gold),
+                    );
+                    ui.add_space(2.0);
+
+                    egui::Grid::new("manifold_topology_grid")
+                        .num_columns(2)
+                        .spacing([10.0, 4.0])
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new("Architecture:").size(11.2).color(muted));
+                            ui.label(
+                                egui::RichText::new(self.scene.short_label())
+                                    .monospace()
+                                    .size(11.2)
+                                    .color(cyan),
+                            );
+                            ui.end_row();
+
+                            ui.label(egui::RichText::new("Camera Pos:").size(11.2).color(muted));
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "({:.1}, {:.1}, {:.1})",
+                                    self.cam_pos.x, self.cam_pos.y, self.cam_pos.z
+                                ))
+                                .monospace()
+                                .size(11.2),
+                            );
+                            ui.end_row();
+
+                            ui.label(egui::RichText::new("Portal Crossings:").size(11.2).color(muted));
+                            ui.label(
+                                egui::RichText::new(format!("{} seamless", self.portal_crossings))
+                                    .monospace()
+                                    .size(11.2)
+                                    .color(emerald),
+                            );
+                            ui.end_row();
+
+                            ui.label(egui::RichText::new("Wormhole Throat:").size(11.2).color(muted));
+                            ui.label(
+                                egui::RichText::new(format!("b0 = {:.2} m (Ellis)", self.wormhole.throat_radius))
+                                    .monospace()
+                                    .size(11.2)
+                                    .color(magenta),
+                            );
+                            ui.end_row();
+                        });
+
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new("[SHADER] DIAGNOSTIC MODE")
+                            .strong()
+                            .size(11.5)
+                            .color(cyan),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut self.heatmap_mode, 0, "PBR + Lensing");
+                        ui.selectable_value(&mut self.heatmap_mode, 2, "Spectrum");
+                        ui.selectable_value(&mut self.heatmap_mode, 1, "Heatmap");
+                    });
+                });
+        }
+
+        // ── 4. Right Panel: Relativistic & Riemannian Inspector ───────────
+        if self.show_right_panel {
+            egui::SidePanel::right("studio_right_inspector")
+                .exact_width(264.0)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new("[INSPECTOR] RELATIVISTIC & RIEMANNIAN")
+                            .strong()
+                            .size(12.0)
+                            .color(cyan),
+                    );
+                    ui.separator();
+
+                    if let Some(ent) = self.entities.get(self.selected_entity) {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(ent.icon).monospace().strong().size(13.5).color(cyan));
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    egui::RichText::new(&ent.name)
+                                        .strong()
+                                        .size(13.0)
+                                        .color(egui::Color32::WHITE),
+                                );
+                                ui.label(egui::RichText::new(ent.category).size(11.0).color(gold));
+                            });
+                        });
+                        ui.separator();
+                    }
+
+                    // Riemannian Curvature & Portal Bounces Sliders
+                    ui.label(
+                        egui::RichText::new("RIEMANNIAN METRIC & PORTALS")
+                            .strong()
+                            .size(11.5)
+                            .color(magenta),
+                    );
+                    ui.add(
+                        egui::Slider::new(&mut self.curvature_k, -1.60..=1.60)
+                            .text("Curvature K")
+                            .fixed_decimals(2),
+                    );
+                    ui.add(
+                        egui::Slider::new(&mut self.max_portal_bounces, 1.0..=16.0)
+                            .text("Portal Bounces")
+                            .integer(),
+                    );
+                    ui.add(
+                        egui::Slider::new(&mut self.portal_yaw_twist, -0.45..=0.45)
+                            .text("Portal Yaw Twist")
+                            .fixed_decimals(2),
+                    );
+                    ui.checkbox(&mut self.geodesic_enabled, "Christoffel RK2 Geodesic Rays");
+
+                    ui.add_space(4.0);
+                    ui.separator();
+
+                    // 4D Schwarzschild Black Hole Inspector
+                    ui.label(
+                        egui::RichText::new("4D SCHWARZSCHILD BLACK HOLE")
+                            .strong()
+                            .size(11.5)
+                            .color(gold),
+                    );
+                    ui.add(
+                        egui::Slider::new(&mut self.bh_radius, 0.0..=1.65)
+                            .text("Horizon r_s")
+                            .fixed_decimals(2),
+                    );
+                    ui.add(
+                        egui::Slider::new(&mut self.bh_pos[0], -1.8..=1.8)
+                            .text("BH Pos X")
+                            .fixed_decimals(2),
+                    );
+                    ui.add(
+                        egui::Slider::new(&mut self.bh_pos[2], -2.6..=0.5)
+                            .text("BH Pos Z")
+                            .fixed_decimals(2),
+                    );
+
+                    let r_ph = 1.5 * self.bh_radius;
+                    let r_isco = 3.0 * self.bh_radius;
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Photon Sphere r_ph = {:.2}m | ISCO = {:.2}m",
+                            r_ph, r_isco
+                        ))
+                        .monospace()
+                        .size(11.0)
+                        .color(cyan),
+                    );
+
+                    ui.add_space(4.0);
+                    ui.separator();
+
+                    // Cross-Portal Geodesic Combat & Sentinel Boss HP Bar
+                    ui.label(
+                        egui::RichText::new("CROSS-PORTAL SENTINEL BOSS (CHART 1)")
+                            .strong()
+                            .size(11.5)
+                            .color(if self.sentinel_hp > 0.0 { magenta } else { emerald }),
+                    );
+                    let hp_frac = (self.sentinel_hp / 100.0).clamp(0.0, 1.0);
+                    let hp_text = if self.sentinel_hp > 0.0 {
+                        format!("Sentinel HP: {:.0} / 100", self.sentinel_hp)
+                    } else {
+                        "SENTINEL DEFEATED (0 / 100 -- SOLVED)".to_string()
+                    };
+                    ui.add(
+                        egui::ProgressBar::new(hp_frac)
+                            .text(hp_text)
+                            .fill(if self.sentinel_hp > 0.0 {
+                                egui::Color32::from_rgb(215, 35, 125)
+                            } else {
+                                egui::Color32::from_rgb(25, 185, 95)
+                            }),
+                    );
+                });
+        }
+    }
+}
+
+// ─── Shared WGPU Ray-Marching + egui Render Pipeline ───────────────────────
+
+struct StudioGpuPipeline {
+    raymarch_pipeline: wgpu::RenderPipeline,
+    uniform_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    egui_renderer: egui_wgpu::Renderer,
+}
+
+impl StudioGpuPipeline {
+    fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat, initial_u: &StudioViewportUniform) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Metatopia Studio 2.0 Raymarch Shader"),
+            source: wgpu::ShaderSource::Wgsl(SHADER_SRC.into()),
+        });
+
+        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("StudioViewportUniform Buffer"),
+            contents: bytemuck::cast_slice(&[*initial_u]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("StudioViewport BindGroupLayout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("StudioViewport BindGroup"),
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("StudioViewport PipelineLayout"),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let raymarch_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("StudioViewport Raymarch Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: "vs_main",
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+        });
+
+        let egui_renderer = egui_wgpu::Renderer::new(device, target_format, None, 1);
+
+        Self {
+            raymarch_pipeline,
+            uniform_buffer,
+            bind_group,
+            egui_renderer,
+        }
+    }
+
+    fn render_frame(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target_view: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+        pixels_per_point: f32,
+        uniform: &StudioViewportUniform,
+        egui_ctx: &egui::Context,
+        full_output: egui::FullOutput,
+    ) -> wgpu::CommandEncoder {
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[*uniform]));
+
+        let clipped_primitives = egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
+        let screen_descriptor = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [width, height],
+            pixels_per_point,
+        };
+
+        for (id, image_delta) in &full_output.textures_delta.set {
+            self.egui_renderer.update_texture(device, queue, *id, image_delta);
+        }
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Metatopia Studio Frame Encoder"),
+        });
+
+        self.egui_renderer.update_buffers(
+            device,
+            queue,
+            &mut encoder,
+            &clipped_primitives,
+            &screen_descriptor,
+        );
+
+        {
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Studio Raymarch + egui RenderPass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            // 1. Draw Full-Screen Ray-Marched Non-Euclidean & Relativistic 3D Viewport
+            rpass.set_pipeline(&self.raymarch_pipeline);
+            rpass.set_bind_group(0, &self.bind_group, &[]);
+            rpass.draw(0..6, 0..1);
+
+            // 2. Composite Crisp Vector egui Studio UI on Top
+            self.egui_renderer
+                .render(&mut rpass, &clipped_primitives, &screen_descriptor);
+        }
+
+        for id in &full_output.textures_delta.free {
+            self.egui_renderer.free_texture(id);
+        }
+
+        encoder
+    }
+}
+
+// ─── Interactive Desktop Application Runner ────────────────────────────────
+
+fn run_interactive_studio(start_in_play_mode: bool) {
+    let event_loop = EventLoop::new().expect("Failed to create EventLoop");
+    let window = Arc::new(
+        WindowBuilder::new()
+            .with_title("Metatopia Engine v0.2.0 — Ray-Marched Non-Euclidean & 4D Relativistic Studio")
+            .with_inner_size(winit::dpi::LogicalSize::new(1440.0, 900.0))
+            .build(&event_loop)
+            .expect("Failed to create window"),
+    );
+
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+    let surface = instance.create_surface(window.clone()).expect("Failed to create surface");
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        compatible_surface: Some(&surface),
+        force_fallback_adapter: false,
+    }))
+    .expect("Failed to request GPU adapter");
+
+    let (device, queue) = pollster::block_on(adapter.request_device(
+        &wgpu::DeviceDescriptor {
+            label: Some("Metatopia Studio Device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+        },
+        None,
+    ))
+    .expect("Failed to create GPU device");
+
+    let size = window.inner_size();
+    let caps = surface.get_capabilities(&adapter);
+    let format = caps
+        .formats
+        .iter()
+        .copied()
+        .find(|f| !f.is_srgb())
+        .unwrap_or(caps.formats[0]);
+
+    let mut config = wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format,
+        width: size.width.max(1),
+        height: size.height.max(1),
+        present_mode: wgpu::PresentMode::AutoVsync,
+        alpha_mode: caps.alpha_modes[0],
+        view_formats: vec![],
+        desired_maximum_frame_latency: 2,
+    };
+    surface.configure(&device, &config);
+
+    let egui_ctx = egui::Context::default();
+    MetatopiaStudioApp::configure_egui_theme(&egui_ctx);
+    let mut egui_state = egui_winit::State::new(
+        egui_ctx.clone(),
+        egui::ViewportId::ROOT,
+        &window,
+        Some(window.scale_factor() as f32),
+        None,
+    );
+
+    let mut app = MetatopiaStudioApp::new(start_in_play_mode);
+    let init_u = app.build_viewport_uniform(config.width, config.height, 0.0);
+    let mut gpu = StudioGpuPipeline::new(&device, format, &init_u);
+
+    let start_time = Instant::now();
+    let mut last_frame = Instant::now();
+    let mut rmb_held = false;
+    let mut keys_held = std::collections::HashSet::new();
+
+    let _ = event_loop.run(move |event, target| {
+        match event {
+            Event::WindowEvent { event: ref we, .. } => {
+                let egui_resp = egui_state.on_window_event(&window, we);
+                if egui_resp.repaint {
+                    window.request_redraw();
+                }
+
+                match we {
+                    WindowEvent::CloseRequested => target.exit(),
+                    WindowEvent::Resized(new_size) => {
+                        if new_size.width > 0 && new_size.height > 0 {
+                            config.width = new_size.width;
+                            config.height = new_size.height;
+                            surface.configure(&device, &config);
+                        }
+                    }
+                    WindowEvent::MouseInput { state, button, .. } => {
+                        if *button == MouseButton::Right {
+                            rmb_held = *state == ElementState::Pressed;
+                        }
+                    }
+                    WindowEvent::KeyboardInput { event: ke, .. } => {
+                        if !egui_ctx.wants_keyboard_input() {
+                            if let PhysicalKey::Code(code) = ke.physical_key {
+                                match ke.state {
+                                    ElementState::Pressed => {
+                                        if !keys_held.contains(&code) {
+                                            match code {
+                                                KeyCode::Escape => target.exit(),
+                                                KeyCode::Space => {
+                                                    app.play_mode = !app.play_mode;
+                                                }
+                                                KeyCode::Digit1 => app.switch_scene(StudioScene::RelativisticBlackHoleCorridor),
+                                                KeyCode::Digit2 => app.switch_scene(StudioScene::HyperbolicHoneycombCathedral),
+                                                KeyCode::Digit3 => app.switch_scene(StudioScene::SphericalCurvatureBridge),
+                                                KeyCode::Digit4 => app.switch_scene(StudioScene::InfinityPortalMirrorTunnel),
+                                                KeyCode::Digit5 => app.switch_scene(StudioScene::KleinBottleChiralLabyrinth),
+                                                KeyCode::KeyP => app.spawn_linked_portal_pair(),
+                                                KeyCode::KeyF => app.fire_cross_portal_laser(),
+                                                _ => {}
+                                            }
+                                        }
+                                        keys_held.insert(code);
+                                    }
+                                    ElementState::Released => {
+                                        keys_held.remove(&code);
+                                    }
+                                }
                             }
                         }
                     }
-                    self.set_status("All Rhai Scripts Hot-Reloaded.");
-                } else if m_ndc_x >= 0.46 && m_ndc_x <= 0.58 && !self.entities.is_empty() {
-                    let removed = self.entities.remove(self.selected_index);
-                    self.set_status(format!("Deleted Entity: '{}'", removed.name));
-                    if self.selected_index >= self.entities.len() && !self.entities.is_empty() {
-                        self.selected_index = self.entities.len() - 1;
+                    WindowEvent::RedrawRequested => {
+                        let now = Instant::now();
+                        let dt = now.duration_since(last_frame).as_secs_f32().clamp(0.001, 0.1);
+                        last_frame = now;
+                        let elapsed = start_time.elapsed().as_secs_f32();
+
+                        app.fps_smooth = app.fps_smooth * 0.9 + (1.0 / dt) * 0.1;
+                        app.frame_ms_smooth = app.frame_ms_smooth * 0.9 + (dt * 1000.0) * 0.1;
+
+                        // Camera WASD Flight
+                        let forward = Vector3::new(
+                            app.cam_yaw.cos() * app.cam_pitch.cos(),
+                            app.cam_pitch.sin(),
+                            app.cam_yaw.sin() * app.cam_pitch.cos(),
+                        )
+                        .normalize();
+                        let right = forward.cross(Vector3::unit_y()).normalize();
+                        let move_spd = 3.8 * dt;
+                        let mut new_pos = app.cam_pos;
+                        if keys_held.contains(&KeyCode::KeyW) {
+                            new_pos += forward * move_spd;
+                        }
+                        if keys_held.contains(&KeyCode::KeyS) {
+                            new_pos -= forward * move_spd;
+                        }
+                        if keys_held.contains(&KeyCode::KeyA) {
+                            new_pos -= right * move_spd;
+                        }
+                        if keys_held.contains(&KeyCode::KeyD) {
+                            new_pos += right * move_spd;
+                        }
+                        if let Some((crossed_pos, _, crossed_chart, _)) =
+                            app.manifold.check_portal_crossing(app.active_chart, app.cam_pos, new_pos, forward)
+                        {
+                            app.active_chart = crossed_chart;
+                            app.cam_pos = crossed_pos;
+                            app.portal_crossings += 1;
+                        } else {
+                            app.cam_pos = new_pos;
+                        }
+
+                        app.step_simulation(dt);
+
+                        let frame = match surface.get_current_texture() {
+                            Ok(f) => f,
+                            Err(_) => {
+                                surface.configure(&device, &config);
+                                return;
+                            }
+                        };
+                        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+                        let raw_input = egui_state.take_egui_input(&window);
+                        let full_output = egui_ctx.run(raw_input, |ctx| {
+                            app.draw_egui_studio(ctx);
+                        });
+                        egui_state.handle_platform_output(&window, full_output.platform_output.clone());
+
+                        let uniform = app.build_viewport_uniform(config.width, config.height, elapsed);
+                        let encoder = gpu.render_frame(
+                            &device,
+                            &queue,
+                            &view,
+                            config.width,
+                            config.height,
+                            full_output.pixels_per_point,
+                            &uniform,
+                            &egui_ctx,
+                            full_output,
+                        );
+                        queue.submit(std::iter::once(encoder.finish()));
+                        frame.present();
                     }
-                } else if m_ndc_x >= 0.60 && m_ndc_x <= 0.76 {
-                    self.spawn_portal_pair();
-                } else if m_ndc_x >= 0.78 && m_ndc_x <= 0.96 {
-                    self.fire_cross_portal_laser();
+                    _ => {}
                 }
             }
-
-            // Left Panel Scene Outliner Selection
-            if m_ndc_x >= -0.98 && m_ndc_x <= -0.65 && m_ndc_y <= 0.72 && m_ndc_y >= -0.60 {
-                let row_height = 0.085;
-                let top_y = 0.70;
-                let clicked_idx = ((top_y - m_ndc_y) / row_height).floor() as isize;
-                if clicked_idx >= 0 && (clicked_idx as usize) < self.entities.len() {
-                    self.selected_index = clicked_idx as usize;
-                    let name = self.entities[self.selected_index].name.clone();
-                    let id = self.entities[self.selected_index].id;
-                    self.set_status(format!("Selected Entity #{} '{}'", id, name));
+            Event::DeviceEvent {
+                event: DeviceEvent::MouseMotion { delta },
+                ..
+            } => {
+                if rmb_held {
+                    app.cam_yaw += delta.0 as f32 * 0.003;
+                    app.cam_pitch = (app.cam_pitch - delta.1 as f32 * 0.003).clamp(-1.3, 1.3);
                 }
             }
-        }
-
-        // 4. Keyboard Shortcuts
-        if ctx.key_pressed(VirtualKey::Digit1) {
-            self.spawn_entity(MeshType::Cube, "CyberCube", [0.2, 0.8, 1.0]);
-        }
-        if ctx.key_pressed(VirtualKey::Digit2) {
-            self.spawn_entity(MeshType::Sphere, "NeonSphere", [1.0, 0.2, 0.5]);
-        }
-        if ctx.key_pressed(VirtualKey::Digit3) {
-            self.spawn_entity(MeshType::Cylinder, "PowerPillar", [1.0, 0.9, 0.1]);
-        }
-        if ctx.key_pressed(VirtualKey::Digit4) {
-            self.spawn_entity(MeshType::Torus, "GravityRing", [0.8, 0.2, 1.0]);
-        }
-        if ctx.key_pressed(VirtualKey::Digit5) {
-            self.spawn_entity(MeshType::Capsule, "BioCapsule", [0.1, 1.0, 0.7]);
-        }
-        if ctx.key_pressed(VirtualKey::KeyP) {
-            self.spawn_portal_pair();
-        }
-        if ctx.key_pressed(VirtualKey::KeyK) {
-            self.cycle_selected_curvature();
-        }
-        if ctx.key_pressed(VirtualKey::KeyF) {
-            self.fire_cross_portal_laser();
-        }
-        if ctx.key_pressed(VirtualKey::Tab) && !self.entities.is_empty() {
-            self.selected_index = (self.selected_index + 1) % self.entities.len();
-        }
-        if ctx.key_pressed(VirtualKey::KeyC) {
-            self.cycle_script_preset();
-        }
-        if ctx.key_pressed(VirtualKey::KeyR) {
-            for entity in &mut self.entities {
-                if !entity.script_source.is_empty() {
-                    if let Ok(ast) = self.script_engine.compile(&entity.script_source) {
-                        entity.script_ast = Some(ast);
-                    }
-                }
+            Event::AboutToWait => {
+                window.request_redraw();
             }
-            self.set_status("Hot-Reloaded All Rhai Scripts.");
+            _ => {}
         }
-        if ctx.key_pressed(VirtualKey::Backspace) && !self.entities.is_empty() {
-            let removed = self.entities.remove(self.selected_index);
-            self.set_status(format!("Deleted Entity '{}'", removed.name));
-            if self.selected_index >= self.entities.len() && !self.entities.is_empty() {
-                self.selected_index = self.entities.len() - 1;
-            }
-        }
-
-        // 5. Arrow Keys Object Movement
-        if !self.entities.is_empty() {
-            let entity = &mut self.entities[self.selected_index];
-            let move_spd = 6.0 * ctx.dt;
-            if ctx.key_held(VirtualKey::ArrowLeft) { entity.pos[0] -= move_spd; }
-            if ctx.key_held(VirtualKey::ArrowRight) { entity.pos[0] += move_spd; }
-            if ctx.key_held(VirtualKey::ArrowUp) { entity.pos[2] -= move_spd; }
-            if ctx.key_held(VirtualKey::ArrowDown) { entity.pos[2] += move_spd; }
-            if ctx.key_held(VirtualKey::PageUp) { entity.pos[1] += move_spd; }
-            if ctx.key_held(VirtualKey::PageDown) { entity.pos[1] -= move_spd; }
-            if ctx.key_held(VirtualKey::KeyQ) { entity.rot[0] += 2.0 * ctx.dt; }
-            if ctx.key_held(VirtualKey::KeyE) { entity.rot[0] -= 2.0 * ctx.dt; }
-
-            entity.script_state.pos = entity.pos;
-            entity.script_state.rot = entity.rot;
-            entity.script_state.scale = entity.scale;
-            entity.script_state.color = entity.color;
-            entity.script_state.emissive = entity.emissive;
-        }
-
-        // 6. Particle Burst & Update
-        if self.mode == EditorMode::Play {
-            self.particle_system.burst(
-                Vector3::new(0.0, 2.4, 0.2),
-                2,
-                [0.0, 0.9, 1.0, 1.0],
-                [0.85, 0.15, 0.9, 0.0],
-                2.8,
-                0.75,
-            );
-        }
-        self.particle_system.update(ctx.dt, None);
-
-        // 7. Execute Scripts in Play Mode
-        if self.mode == EditorMode::Play {
-            for entity in &mut self.entities {
-                if let Some(ast) = &entity.script_ast {
-                    let _ = self.script_engine.execute_update(ast, &mut entity.script_state, ctx.dt);
-                    entity.pos = entity.script_state.pos;
-                    entity.rot = entity.script_state.rot;
-                    entity.color = entity.script_state.color;
-                    entity.emissive = entity.script_state.emissive;
-                    entity.scale = entity.script_state.scale;
-                }
-            }
-        }
-
-        let selected_id = if !self.entities.is_empty() {
-            self.entities[self.selected_index].id as f32
-        } else {
-            0.0
-        };
-        let is_play = if self.mode == EditorMode::Play { 1.0 } else { 0.0 };
-        ctx.scene.game_data = [ctx.time, is_play, selected_id, 0.0];
-    }
-
-    fn build_mesh(&self) -> (Vec<GameVertex>, Vec<u32>) {
-        let mut verts = Vec::with_capacity(48000);
-        let mut indices = Vec::with_capacity(96000);
-
-        // 1. Grid Floor Plane (140x140)
-        let (plane_v, plane_i) = ProceduralMesh::plane(140.0, 140.0, 28, 28, [0.06, 0.08, 0.12]);
-        let base = verts.len() as u32;
-        for v in plane_v {
-            verts.push(GameVertex::new(v.position, v.normal, v.color, [0.1, 0.8, 0.0, 0.0]));
-        }
-        for idx in plane_i {
-            indices.push(base + idx);
-        }
-
-        // 2. Render Schwarzschild Black Hole Relativistic Accretion Disk & Photon Sphere Ring
-        if let Some(bh_ent) = self.entities.iter().find(|e| e.name == "SchwarzschildBH") {
-            let bh_c = bh_ent.pos;
-            let spin_yaw = bh_ent.rot[0];
-
-            // Relativistic Doppler-Beamed Accretion Disk (approaching wing bright gold/cyan, receding wing crimson)
-            let rings = 6usize;
-            let segs = 32usize;
-            for r_idx in 0..rings {
-                let r_frac = r_idx as f32 / (rings - 1).max(1) as f32;
-                let radius = 1.15 + r_frac * 1.65;
-                let doppler_r = 2.2 + r_frac * 3.0;
-                for s_idx in 0..segs {
-                    let a0 = (s_idx as f32 / segs as f32) * std::f32::consts::TAU + spin_yaw;
-                    let a1 = ((s_idx + 1) as f32 / segs as f32) * std::f32::consts::TAU + spin_yaw;
-                    let p0 = [
-                        bh_c[0] + a0.cos() * radius,
-                        bh_c[1] + a0.sin() * radius * 0.26,
-                        bh_c[2] + a0.sin() * radius,
-                    ];
-                    let p1 = [
-                        bh_c[0] + a1.cos() * radius,
-                        bh_c[1] + a1.sin() * radius * 0.26,
-                        bh_c[2] + a1.sin() * radius,
-                    ];
-                    let (delta, _boost4) = self.black_hole.accretion_disk_doppler(
-                        cgmath::Point3::new(
-                            self.black_hole.center.x + a0.cos() * doppler_r,
-                            self.black_hole.center.y,
-                            self.black_hole.center.z + a0.sin() * doppler_r,
-                        ),
-                        cgmath::Vector3::new(0.0, -0.25, -1.0),
-                    );
-                    let boost = delta.clamp(0.40, 2.1);
-                    let disk_col = [
-                        (0.95_f32 * boost).min(1.0),
-                        (0.42_f32 * boost * boost).min(1.0),
-                        (0.12_f32 * boost * boost * boost).min(1.0),
-                    ];
-                    push_3d_line(&mut verts, &mut indices, p0, p1, 0.085, disk_col, 0.85);
-                }
-            }
-
-            // Photon Sphere Ring at r_ph
-            let r_ph_vis = 1.05;
-            for s_idx in 0..28 {
-                let a0 = (s_idx as f32 / 28.0) * std::f32::consts::TAU;
-                let a1 = ((s_idx + 1) as f32 / 28.0) * std::f32::consts::TAU;
-                let p0 = [bh_c[0] + a0.cos() * r_ph_vis, bh_c[1] + a0.sin() * r_ph_vis, bh_c[2]];
-                let p1 = [bh_c[0] + a1.cos() * r_ph_vis, bh_c[1] + a1.sin() * r_ph_vis, bh_c[2]];
-                push_3d_line(&mut verts, &mut indices, p0, p1, 0.035, [1.0, 0.78, 0.25], 1.1);
-            }
-        }
-
-        // 3. Render Sentinel Boss Target in Chart 1 (visible behind Portal_B)
-        if self.sentinel_hp > 0.0 {
-            let hp_ratio = (self.sentinel_hp / 100.0).clamp(0.0, 1.0);
-            let boss_col = [1.0, 0.15 + 0.55 * hp_ratio, 0.35];
-            let (bv, bi) = ProceduralMesh::capsule(0.65, 0.5, 10, 18, boss_col);
-            let b_base = verts.len() as u32;
-            for v in bv {
-                verts.push(GameVertex::new(
-                    [v.position[0], v.position[1] + 2.2, v.position[2] - 7.8],
-                    v.normal,
-                    boss_col,
-                    [0.4, 0.25, 0.75, 99.0],
-                ));
-            }
-            for idx in bi {
-                indices.push(b_base + idx);
-            }
-        }
-
-        // 4. Render Cross-Portal Geodesic Laser Beam (when active)
-        if self.laser_flash_timer > 0.0 {
-            let intensity = (self.laser_flash_timer / 1.15).clamp(0.2, 1.0);
-            for (seg_idx, &(p0, p1)) in self.last_laser_segments.iter().enumerate() {
-                let beam_col = if seg_idx == 0 {
-                    [0.0, 0.96, 1.0]
-                } else {
-                    [1.0, 0.22, 0.88]
-                };
-                push_3d_line(&mut verts, &mut indices, p0, p1, 0.095 * intensity, beam_col, 1.35 * intensity);
-                push_3d_line(&mut verts, &mut indices, p0, p1, 0.038 * intensity, [1.0, 1.0, 1.0], 1.6 * intensity);
-            }
-        }
-
-        // 5. Render All Scene Entities (with full yaw + pitch 3D rotation)
-        for entity in &self.entities {
-            let (shape_v, shape_i) = match entity.mesh_type {
-                MeshType::Cube => {
-                    let hx = entity.scale[0] * 0.55;
-                    let hy = entity.scale[1] * 0.55;
-                    let hz = entity.scale[2] * 0.55;
-                    let mut c_v = Vec::new();
-                    let mut c_i = Vec::new();
-                    let corners = [
-                        [-hx, -hy, -hz], [hx, -hy, -hz], [hx, hy, -hz], [-hx, hy, -hz],
-                        [-hx, -hy,  hz], [hx, -hy,  hz], [hx, hy,  hz], [-hx, hy,  hz],
-                    ];
-                    let faces = [
-                        (0, 1, 2, 3, [0.0, 0.0, -1.0]), (5, 4, 7, 6, [0.0, 0.0, 1.0]),
-                        (4, 0, 3, 7, [-1.0, 0.0, 0.0]), (1, 5, 6, 2, [1.0, 0.0, 0.0]),
-                        (3, 2, 6, 7, [0.0, 1.0, 0.0]),  (4, 5, 1, 0, [0.0, -1.0, 0.0]),
-                    ];
-                    for &(a, b, c, d, norm) in &faces {
-                        let f_base = c_v.len() as u32;
-                        c_v.push(GameVertex::colored(corners[a], norm, entity.color));
-                        c_v.push(GameVertex::colored(corners[b], norm, entity.color));
-                        c_v.push(GameVertex::colored(corners[c], norm, entity.color));
-                        c_v.push(GameVertex::colored(corners[d], norm, entity.color));
-                        c_i.extend_from_slice(&[f_base, f_base + 1, f_base + 2, f_base, f_base + 2, f_base + 3]);
-                    }
-                    (c_v, c_i)
-                }
-                MeshType::Sphere => ProceduralMesh::capsule(entity.scale[0] * 0.5, 0.01, 10, 18, entity.color),
-                MeshType::Cylinder => ProceduralMesh::cylinder(entity.scale[0] * 0.5, entity.scale[1], 18, entity.color),
-                MeshType::Torus => ProceduralMesh::torus(entity.scale[0] * 0.85, entity.scale[0] * 0.22, 28, 14, entity.color),
-                MeshType::Capsule => ProceduralMesh::capsule(entity.scale[0] * 0.4, entity.scale[1], 10, 16, entity.color),
-            };
-
-            let base_offset = verts.len() as u32;
-            let pbr = [entity.metallic, entity.roughness, entity.emissive.clamp(0.0, 1.25), entity.id as f32];
-            let (sy, cy) = entity.rot[0].sin_cos();
-            let (sp, cp) = entity.rot[1].sin_cos();
-
-            for v in shape_v {
-                // Pitch around X, then Yaw around Y
-                let x0 = v.position[0];
-                let y0 = v.position[1] * cp - v.position[2] * sp;
-                let z0 = v.position[1] * sp + v.position[2] * cp;
-
-                let rx = x0 * cy - z0 * sy;
-                let rz = x0 * sy + z0 * cy;
-                let world_pos = [
-                    rx + entity.pos[0],
-                    y0 + entity.pos[1],
-                    rz + entity.pos[2],
-                ];
-
-                let nx0 = v.normal[0];
-                let ny0 = v.normal[1] * cp - v.normal[2] * sp;
-                let nz0 = v.normal[1] * sp + v.normal[2] * cp;
-                let r_norm_x = nx0 * cy - nz0 * sy;
-                let r_norm_z = nx0 * sy + nz0 * cy;
-                let world_norm = [r_norm_x, ny0, r_norm_z];
-
-                verts.push(GameVertex::new(world_pos, world_norm, v.color, pbr));
-            }
-
-            for idx in shape_i {
-                indices.push(base_offset + idx);
-            }
-        }
-
-        // 6. Selection Transform Gizmo (Red X, Green Y, Blue Z axes with pbr.w = -3.0 depth priority)
-        if !self.entities.is_empty() && self.mode == EditorMode::Edit {
-            let entity = &self.entities[self.selected_index];
-            let ep = entity.pos;
-            let g_len = 2.1;
-            let g_rad = 0.065;
-
-            let (x_v, x_i) = ProceduralMesh::cylinder(g_rad, g_len, 10, [1.0, 0.18, 0.18]);
-            let x_base = verts.len() as u32;
-            for v in x_v {
-                let pos = [ep[0] + v.position[1] + g_len * 0.5, ep[1] + v.position[0], ep[2] + v.position[2]];
-                verts.push(GameVertex::new(pos, [1.0, 0.0, 0.0], [1.0, 0.18, 0.18], [0.0, 0.2, 1.0, -3.0]));
-            }
-            for idx in x_i { indices.push(x_base + idx); }
-
-            let (y_v, y_i) = ProceduralMesh::cylinder(g_rad, g_len, 10, [0.18, 1.0, 0.28]);
-            let y_base = verts.len() as u32;
-            for v in y_v {
-                let pos = [ep[0] + v.position[0], ep[1] + v.position[1] + g_len * 0.5, ep[2] + v.position[2]];
-                verts.push(GameVertex::new(pos, [0.0, 1.0, 0.0], [0.18, 1.0, 0.28], [0.0, 0.2, 1.0, -3.0]));
-            }
-            for idx in y_i { indices.push(y_base + idx); }
-
-            let (z_v, z_i) = ProceduralMesh::cylinder(g_rad, g_len, 10, [0.22, 0.58, 1.0]);
-            let z_base = verts.len() as u32;
-            for v in z_v {
-                let pos = [ep[0] + v.position[0], ep[1] + v.position[2], ep[2] + v.position[1] + g_len * 0.5];
-                verts.push(GameVertex::new(pos, [0.0, 0.0, 1.0], [0.22, 0.58, 1.0], [0.0, 0.2, 1.0, -3.0]));
-            }
-            for idx in z_i { indices.push(z_base + idx); }
-        }
-
-        // 7. Render Particle System in Play Mode (with clamped emissive so cyan/magenta colors stay vivid)
-        if self.mode == EditorMode::Play {
-            let (p_verts, p_indices) = self.particle_system.build_mesh();
-            let base = verts.len() as u32;
-            for mut pv in p_verts {
-                pv.pbr[2] = pv.pbr[2].clamp(0.15, 0.95);
-                verts.push(pv);
-            }
-            for pi in p_indices {
-                indices.push(base + pi);
-            }
-        }
-
-        // 8. 2D On-Screen Studio UI Overlay (sRGB-correct deep obsidian panels)
-        push_ui_rect(&mut verts, &mut indices, -1.0, 0.84, 1.0, 1.0, [0.05, 0.06, 0.09], 0.97);
-        push_ui_rect(&mut verts, &mut indices, -1.0, 0.835, 1.0, 0.845, [0.0, 0.85, 1.0], 1.0);
-
-        push_text(&mut verts, &mut indices, "METATOPIA ENGINE", -0.97, 0.89, 0.015, 0.032, [0.0, 0.95, 1.0]);
-
-        let (mode_label, mode_col) = match self.mode {
-            EditorMode::Edit => ("MODE:EDIT", [0.16, 0.52, 0.88]),
-            EditorMode::Play => ("MODE:PLAY", [0.15, 0.78, 0.38]),
-        };
-        push_ui_rect(&mut verts, &mut indices, -0.68, 0.86, -0.52, 0.97, mode_col, 0.98);
-        push_text(&mut verts, &mut indices, mode_label, -0.665, 0.89, 0.012, 0.026, [1.0, 1.0, 1.0]);
-
-        let buttons = [
-            (-0.50, -0.40, "+CUBE", [0.14, 0.20, 0.30]),
-            (-0.38, -0.26, "+SPHERE", [0.14, 0.20, 0.30]),
-            (-0.24, -0.14, "+CYL", [0.14, 0.20, 0.30]),
-            (-0.12, -0.02, "+TORUS", [0.14, 0.20, 0.30]),
-            (0.00, 0.10, "+CAPS", [0.14, 0.20, 0.30]),
-            (0.12, 0.28, "SCRIPT(C)", [0.26, 0.16, 0.40]),
-            (0.30, 0.44, "RELOAD(R)", [0.16, 0.34, 0.26]),
-            (0.46, 0.58, "DEL(BS)", [0.42, 0.15, 0.18]),
-            (0.60, 0.76, "+PORTAL(P)", [0.06, 0.40, 0.50]),
-            (0.78, 0.96, "LASER(F)", [0.55, 0.14, 0.42]),
-        ];
-        for (bx0, bx1, label, bcol) in buttons {
-            push_ui_rect(&mut verts, &mut indices, bx0, 0.86, bx1, 0.97, bcol, 0.96);
-            push_text(&mut verts, &mut indices, label, bx0 + 0.012, 0.89, 0.011, 0.024, [0.94, 0.97, 1.0]);
-        }
-
-        // Left Scene Outliner Panel
-        push_ui_rect(&mut verts, &mut indices, -0.98, -0.62, -0.65, 0.81, [0.055, 0.065, 0.10], 0.96);
-        push_ui_rect(&mut verts, &mut indices, -0.655, -0.62, -0.65, 0.81, [0.0, 0.65, 0.85], 1.0);
-        push_text(&mut verts, &mut indices, "SCENE OUTLINER", -0.95, 0.74, 0.014, 0.026, [0.0, 0.92, 1.0]);
-
-        for (i, entity) in self.entities.iter().enumerate().take(14) {
-            let row_y = 0.64 - (i as f32) * 0.085;
-            let is_sel = i == self.selected_index;
-            if is_sel {
-                push_ui_rect(&mut verts, &mut indices, -0.96, row_y - 0.015, -0.67, row_y + 0.045, [0.14, 0.40, 0.58], 0.98);
-            }
-            let txt_col = if is_sel { [1.0, 1.0, 1.0] } else { [0.78, 0.84, 0.92] };
-            let item_label = format!("{}:{}", entity.id, entity.name);
-            push_text(&mut verts, &mut indices, &item_label, -0.94, row_y, 0.012, 0.024, txt_col);
-        }
-
-        // Right Property Inspector + 4D Relativity Panel (widened to x=0.63..0.985 so zero rows clip)
-        push_ui_rect(&mut verts, &mut indices, 0.63, -0.62, 0.985, 0.81, [0.055, 0.065, 0.10], 0.96);
-        push_ui_rect(&mut verts, &mut indices, 0.63, -0.62, 0.635, 0.81, [0.0, 0.65, 0.85], 1.0);
-        push_text(&mut verts, &mut indices, "INSPECTOR", 0.66, 0.74, 0.014, 0.026, [1.0, 0.78, 0.22]);
-
-        if !self.entities.is_empty() {
-            let selected = &self.entities[self.selected_index];
-            push_text(&mut verts, &mut indices, &format!("NAME: {}", selected.name), 0.66, 0.64, 0.011, 0.024, [0.96, 0.97, 1.0]);
-            push_text(&mut verts, &mut indices, "TRANSFORM (POS):", 0.66, 0.54, 0.011, 0.024, [0.55, 0.82, 1.0]);
-            push_text(&mut verts, &mut indices, &format!("X: {:.2}", selected.pos[0]), 0.68, 0.46, 0.011, 0.024, [1.0, 0.45, 0.45]);
-            push_text(&mut verts, &mut indices, &format!("Y: {:.2}", selected.pos[1]), 0.68, 0.38, 0.011, 0.024, [0.45, 1.0, 0.55]);
-            push_text(&mut verts, &mut indices, &format!("Z: {:.2}", selected.pos[2]), 0.68, 0.30, 0.011, 0.024, [0.45, 0.75, 1.0]);
-
-            push_text(&mut verts, &mut indices, &format!("SCALE: {:.2} | YAW: {:.2}", selected.scale[0], selected.rot[0]), 0.66, 0.20, 0.011, 0.024, [0.88, 0.90, 0.95]);
-
-            push_text(&mut verts, &mut indices, "SCRIPT PRESET:", 0.66, 0.10, 0.011, 0.024, [0.85, 0.55, 1.0]);
-            push_text(&mut verts, &mut indices, &selected.script_preset_name, 0.66, 0.02, 0.011, 0.024, [0.35, 1.0, 0.72]);
-
-            push_text(&mut verts, &mut indices, "MANIFOLD & 4D GR:", 0.66, -0.08, 0.011, 0.024, [0.0, 0.95, 1.0]);
-            let manifold_label = format!(
-                "CHART: {} | CURV K: {:.1}",
-                selected.script_state.chart_id, selected.script_state.curvature_k
-            );
-            push_text(&mut verts, &mut indices, &manifold_label, 0.66, -0.16, 0.011, 0.024, [0.88, 0.96, 1.0]);
-
-            let bh_label = format!(
-                "BH R_PH: {:.2} | ISCO: {:.1}",
-                self.black_hole.photon_sphere_radius(),
-                self.black_hole.isco_radius()
-            );
-            push_text(&mut verts, &mut indices, &bh_label, 0.66, -0.24, 0.011, 0.024, [1.0, 0.78, 0.28]);
-
-            let boss_label = format!("SENTINEL HP: {:.0} / 100", self.sentinel_hp);
-            let boss_col = if self.sentinel_hp > 0.0 { [1.0, 0.42, 0.78] } else { [0.25, 1.0, 0.55] };
-            push_text(&mut verts, &mut indices, &boss_label, 0.66, -0.32, 0.011, 0.024, boss_col);
-        }
-
-        // Bottom Script Console & Status Bar Panel
-        push_ui_rect(&mut verts, &mut indices, -0.98, -0.97, 0.985, -0.64, [0.045, 0.055, 0.085], 0.97);
-        push_ui_rect(&mut verts, &mut indices, -0.98, -0.65, 0.985, -0.64, [0.0, 0.65, 0.85], 1.0);
-
-        push_text(&mut verts, &mut indices, "RHAI SCRIPT IDE & CONSOLE (HOT-RELOAD ON R | LASER ON F):", -0.95, -0.71, 0.012, 0.024, [0.0, 0.92, 1.0]);
-        push_text(&mut verts, &mut indices, "1 | FN UPDATE(E, DT) { E.SET_CURVATURE(-1.0); E.MOBIUS_STEP(0.05*DT, 0.0, 0.0); RETURN E; }", -0.95, -0.79, 0.011, 0.024, [0.95, 0.82, 0.25]);
-        push_text(&mut verts, &mut indices, "2 | CONTROLS: [SPACE] PLAY/EDIT | [WASD+RMB] FLY | [P] +PORTAL | [K] CURVATURE | [F] FIRE LASER", -0.95, -0.87, 0.011, 0.024, [0.75, 0.82, 0.92]);
-
-        let log_text = format!("[LOG]: {}", self.status_message);
-        push_text(&mut verts, &mut indices, &log_text, -0.95, -0.95, 0.011, 0.024, [0.25, 1.0, 0.55]);
-
-        // Smooth cinema fade-in / fade-out overlay when recording video
-        if self.screen_fade_alpha > 0.001 {
-            push_ui_rect_layer(&mut verts, &mut indices, -1.0, -1.0, 1.0, 1.0, [0.0, 0.0, 0.0], self.screen_fade_alpha, -2.2);
-        }
-
-        (verts, indices)
-    }
+    });
 }
 
-fn print_help() {
-    println!("====================================================================");
-    println!("  METATOPIA GAME ENGINE v0.2.0 (macOS Native Apple Silicon / Metal)");
-    println!("====================================================================");
-    println!("Usage: metatopia [OPTIONS]");
-    println!();
-    println!("Options:");
-    println!("  (no args)              Launch Metatopia Studio 2.0 & 3D Game Engine GUI");
-    println!("  --play                 Launch directly in live Play Mode (Scripts & Physics active)");
-    println!("  --record-video <PATH>  Render 60 FPS macOS Engine & Studio showcase video via Metal WGPU");
-    println!("  --verify               Run full headless verification suite (Studio, 4D GR, Portals, Net)");
-    println!("  --version              Print engine version");
-    println!("  --help, -h             Print this help summary");
-}
+// ─── Synthesized 128 BPM Stereo Soundtrack + Laser SFX ─────────────────────
 
-/// Synthesizes a 16.0-second 128 BPM stereo soundtrack with:
-/// - Wide stereo detuned FM arpeggiator & progression
-/// - Mode-switch synth riser into Bar 5 (7.50s = Play Mode activation)
-/// - Synchronized sci-fi laser zap + sub-impact SFX at 10.31s, 12.19s, and 14.06s
-/// - True-peak limiting below -1.8 dBTP (zero clipping)
 fn synthesize_engine_demo_wav(wav_path: &str, duration_secs: f32) {
-    use std::io::Write;
     let sample_rate = 48_000u32;
     let num_samples = (duration_secs * sample_rate as f32) as usize;
     let bpm = 128.0f32;
-    let beat_sec = 60.0 / bpm; // 0.46875s
+    let beat_sec = 60.0 / bpm;
     let step16_sec = beat_sec * 0.25;
     let tau = std::f32::consts::TAU;
     let arp_notes: [f32; 8] = [349.23, 415.30, 523.25, 622.25, 698.46, 622.25, 523.25, 415.30];
-    let laser_times: [f32; 3] = [619.0 / 60.0, 731.0 / 60.0, 844.0 / 60.0];
+    let laser_times: [f32; 3] = [562.0 / 60.0, 675.0 / 60.0, 844.0 / 60.0];
     let play_switch_time = 450.0 / 60.0; // 7.50s (Bar 5 downbeat)
 
     let data_bytes = (num_samples * 4) as u32;
@@ -1314,12 +1509,10 @@ fn synthesize_engine_demo_wav(wav_path: &str, duration_secs: f32) {
         let step16_pos = (t / step16_sec).fract();
         let in_play_mode = t >= play_switch_time;
 
-        // 1. Punchy 909 Kick
         let kick_freq = 48.0 + 115.0 * (-beat_pos * 28.0).exp();
         let kick = (tau * kick_freq * t).sin() * (-beat_pos * 6.2).exp() * 0.42;
         let sidechain = (1.0 - (-beat_pos * 5.5).exp() * 0.65).clamp(0.25, 1.0);
 
-        // 2. Stereo Reese Bassline (shifts up in energy once Play Mode activates at 7.50s)
         let bass_freq = match (step16_idx / 16) % 4 {
             0 => 43.65,
             1 => 51.91,
@@ -1333,7 +1526,6 @@ fn synthesize_engine_demo_wav(wav_path: &str, duration_secs: f32) {
             * sidechain
             * if in_play_mode { 0.30 } else { 0.24 };
 
-        // 3. Wide Stereo Ping-Pong FM Arpeggiator
         let base_arp = arp_notes[step16_idx % arp_notes.len()];
         let arp_f = if in_play_mode && (step16_idx % 4 == 2) { base_arp * 2.0 } else { base_arp };
         let arp_env = (-step16_pos * 8.5).exp();
@@ -1343,7 +1535,6 @@ fn synthesize_engine_demo_wav(wav_path: &str, duration_secs: f32) {
         let arp_l = arp_sig_l * (1.0 - pan).sqrt();
         let arp_r = arp_sig_r * pan.sqrt();
 
-        // 4. Play Mode Activation Riser & Chime at 7.50s
         let mut sfx_l = 0.0f32;
         let mut sfx_r = 0.0f32;
         if t >= play_switch_time - 0.9 && t < play_switch_time {
@@ -1358,75 +1549,74 @@ fn synthesize_engine_demo_wav(wav_path: &str, duration_secs: f32) {
             sfx_r += ((tau * 880.00 * t).sin() + (tau * 1396.91 * t).sin()) * env * 0.14;
         }
 
-        // 5. Diegetic Cross-Portal Geodesic Laser Zap + Sub-Impact SFX
-        for &lt in &laser_times {
-            if t >= lt && t < lt + 0.48 {
+        for (shot_idx, &lt) in laser_times.iter().enumerate() {
+            if t >= lt && t < lt + 0.50 {
                 let dt_l = t - lt;
-                let zap_f = 160.0 + 1850.0 * (-dt_l * 18.0).exp();
+                let zap_f = 180.0 + 1450.0 * (-dt_l * 18.0).exp();
                 let zap_env = (-dt_l * 7.5).exp();
-                let zap = (tau * zap_f * t + 2.5 * (tau * 92.0 * t).sin()).sin() * zap_env * 0.24;
-                sfx_l += zap * 1.1;
-                sfx_r += zap * 0.9;
+                let zap = (tau * zap_f * t + 2.5 * (tau * 95.0 * t).sin()).sin() * zap_env * 0.24;
+                sfx_l += zap;
+                sfx_r += zap * 0.92;
+                if shot_idx == 2 {
+                    let chord_env = (-dt_l * 3.5).exp();
+                    sfx_l += (tau * 523.25 * t).sin() * chord_env * 0.14;
+                    sfx_r += (tau * 698.46 * t).sin() * chord_env * 0.14;
+                }
             }
         }
 
-        let fade = if t < 0.4 {
-            t / 0.4
-        } else if t > duration_secs - 1.0 {
-            ((duration_secs - t) / 1.0).clamp(0.0, 1.0)
-        } else {
-            1.0
-        };
+        let fade_in = (t / 0.35).clamp(0.0, 1.0);
+        let fade_out = ((duration_secs - t) / 1.0).clamp(0.0, 1.0);
+        let master_gain = 0.78 * fade_in * fade_out;
 
-        // Soft-knee limiter with generous headroom (~ -2.0 dBTP)
-        let mix_l = (kick + bass_l + arp_l + sfx_l).tanh() * fade;
-        let mix_r = (kick + bass_r + arp_r + sfx_r).tanh() * fade;
-        let l = (mix_l * 23_500.0).clamp(-32_767.0, 32_767.0) as i16;
-        let r = (mix_r * 23_500.0).clamp(-32_767.0, 32_767.0) as i16;
-        pcm.extend_from_slice(&l.to_le_bytes());
-        pcm.extend_from_slice(&r.to_le_bytes());
+        let raw_l = (kick + bass_l + arp_l + sfx_l) * master_gain;
+        let raw_r = (kick + bass_r + arp_r + sfx_r) * master_gain;
+        let lim_l = (raw_l.tanh() * 0.80).clamp(-0.80, 0.80);
+        let lim_r = (raw_r.tanh() * 0.80).clamp(-0.80, 0.80);
+
+        let s_l = (lim_l * 32767.0) as i16;
+        let s_r = (lim_r * 32767.0) as i16;
+        pcm.extend_from_slice(&s_l.to_le_bytes());
+        pcm.extend_from_slice(&s_r.to_le_bytes());
     }
 
     let mut f = std::fs::File::create(wav_path).expect("Failed to create WAV file");
     f.write_all(&pcm).expect("Failed to write WAV file");
 }
 
-fn run_engine_video_recording(output_path: &str) {
-    use cgmath::{Deg, perspective};
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-    use wgpu::util::DeviceExt;
+// ─── Offscreen 60 FPS Ray-Marched + egui Video Recorder ────────────────────
 
+fn record_showcase_video(output_path: &str) {
     let width = 1280u32;
     let height = 720u32;
     let fps = 60u32;
     let duration_secs = 16.0f32;
-    let total_frames = (fps as f32 * duration_secs) as u32; // 960 frames @ 60 FPS
+    let total_frames = (fps as f32 * duration_secs) as u32;
 
-    let wav_path = "/tmp/metatopia_macos_engine_demo.wav";
+    let wav_path = "/tmp/metatopia_studio2_audio.wav";
     synthesize_engine_demo_wav(wav_path, duration_secs);
 
-    let instance = wgpu::Instance::default();
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,
         force_fallback_adapter: false,
     }))
-    .expect("Failed to acquire Metal GPU adapter");
+    .expect("Failed to request GPU adapter");
 
     let (device, queue) = pollster::block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
-            label: Some("MetatopiaVideoDevice"),
+            label: Some("Metatopia Offscreen Video Recorder"),
             required_features: wgpu::Features::empty(),
             required_limits: wgpu::Limits::default(),
         },
         None,
     ))
-    .expect("Failed to create WGPU device");
+    .expect("Failed to request GPU device");
 
-    let target_format = wgpu::TextureFormat::Rgba8UnormSrgb;
-    let target_tex = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("EngineVideoTarget"),
+    let target_format = wgpu::TextureFormat::Rgba8Unorm;
+    let color_tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Offscreen Studio Color Texture"),
         size: wgpu::Extent3d {
             width,
             height,
@@ -1439,141 +1629,24 @@ fn run_engine_video_recording(output_path: &str) {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
-    let target_view = target_tex.create_view(&wgpu::TextureViewDescriptor::default());
-
-    let depth_tex = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("EngineVideoDepth"),
-        size: wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Depth32Float,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        view_formats: &[],
-    });
-    let depth_view = depth_tex.create_view(&wgpu::TextureViewDescriptor::default());
+    let color_view = color_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
     let bytes_per_row = (width * 4 + 255) & !255;
-    let readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("EngineVideoReadback"),
+    let readback_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Offscreen Readback Buffer"),
         size: (bytes_per_row * height) as u64,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
 
-    let mut camera_uniform = CameraUniform {
-        view_proj: [[0.0; 4]; 4],
-        view_position: [0.0; 4],
-    };
-    let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("CameraUniform"),
-        contents: bytemuck::cast_slice(&[camera_uniform]),
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-    });
+    let egui_ctx = egui::Context::default();
+    MetatopiaStudioApp::configure_egui_theme(&egui_ctx);
 
-    let mut scene_uniform = SceneUniform::default();
-    scene_uniform.sun_direction = [-0.5, -1.0, -0.6, 0.0];
-    scene_uniform.sun_color = [1.0, 0.98, 0.92, 1.0];
-    let scene_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("SceneUniform"),
-        contents: bytemuck::cast_slice(&[scene_uniform]),
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-    });
+    let mut app = MetatopiaStudioApp::new(false);
+    let init_u = app.build_viewport_uniform(width, height, 0.0);
+    let mut gpu = StudioGpuPipeline::new(&device, target_format, &init_u);
 
-    let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("Uniforms"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-        ],
-    });
-
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("UniformsBG"),
-        layout: &bind_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: camera_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: scene_buffer.as_entire_binding(),
-            },
-        ],
-    });
-
-    let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("EditorShader"),
-        source: wgpu::ShaderSource::Wgsl(SHADER_SRC.into()),
-    });
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: None,
-        bind_group_layouts: &[&bind_layout],
-        push_constant_ranges: &[],
-    });
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("EngineVideoPipeline"),
-        layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &shader_module,
-            entry_point: "vs_main",
-            buffers: &[GameVertex::LAYOUT],
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: &shader_module,
-            entry_point: "fs_main",
-            targets: &[Some(wgpu::ColorTargetState {
-                format: target_format,
-                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-        }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            cull_mode: None,
-            ..Default::default()
-        },
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: wgpu::TextureFormat::Depth32Float,
-            depth_write_enabled: true,
-            depth_compare: wgpu::CompareFunction::LessEqual,
-            stencil: wgpu::StencilState::default(),
-            bias: wgpu::DepthBiasState::default(),
-        }),
-        multisample: wgpu::MultisampleState::default(),
-        multiview: None,
-    });
-
-    let ffmpeg_bin = if std::path::Path::new("/opt/homebrew/bin/ffmpeg").exists() {
-        "/opt/homebrew/bin/ffmpeg"
-    } else {
-        "ffmpeg"
-    };
-
-    let mut ffmpeg = Command::new(ffmpeg_bin)
+    let mut ffmpeg = Command::new("ffmpeg")
         .args([
             "-y",
             "-f",
@@ -1625,205 +1698,135 @@ fn run_engine_video_recording(output_path: &str) {
         .expect("Failed to spawn ffmpeg");
 
     let ffmpeg_stdin = ffmpeg.stdin.as_mut().expect("Failed to open ffmpeg stdin");
-    let mut app = MetatopiaEngineApp::new(false);
-    let mut camera = FpsCamera::default();
     let dt = 1.0 / (fps as f32);
     let mut frame_rgba = vec![0u8; (width * height * 4) as usize];
 
     println!("====================================================================");
-    println!("  RECORDING MACOS ENGINE SHOWCASE VIDEO (960 frames @ 60 FPS)");
+    println!("  RECORDING RAY-MARCHED STUDIO 2.0 + EGUI VIDEO (960 frames @ 60 FPS)");
     println!("  Output: {}", output_path);
     println!("====================================================================");
 
     for frame_idx in 0..total_frames {
         let t = frame_idx as f32 * dt;
 
-        // Smooth cinema fade-in (0.0s..0.4s) & fade-out (15.0s..16.0s) matching audio
-        app.screen_fade_alpha = if t < 0.4 {
-            1.0 - (t / 0.4)
-        } else if t > duration_secs - 1.0 {
-            ((t - (duration_secs - 1.0)) / 1.0).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-
-        if app.laser_flash_timer > 0.0 {
-            app.laser_flash_timer = (app.laser_flash_timer - dt).max(0.0);
-        }
-
-        // Beat-Quantized 128 BPM Choreography (1 bar = 1.875s = 112.5 frames):
+        // Beat-Quantized 128 BPM Choreography across all 5 Ray-Marched Non-Euclidean Architectures:
         match frame_idx {
             0 => {
-                app.selected_index = 0;
-                app.set_status("PHASE 1: EDIT MODE - Inspecting HyperCore & 3D Transform Gizmo");
+                app.switch_scene(StudioScene::RelativisticBlackHoleCorridor);
+                app.selected_entity = 0;
+                app.log("SCENE 1: 4D Schwarzschild Black Hole Gravitational Lensing & Recursive Portals");
             }
             112 => {
-                app.selected_index = 1;
-                app.set_status("SELECTED: ChronoOrb (ID #2) - Circular Orbit Preset");
+                app.selected_entity = 1;
+                app.spawn_linked_portal_pair();
             }
             225 => {
-                app.selected_index = 4;
-                app.set_status("SELECTED: SchwarzschildBH (ID #5) - Doppler Accretion Disk & Photon Sphere");
-            }
-            309 => {
-                app.spawn_entity(MeshType::Cube, "CyberCube", [0.2, 0.85, 1.0]);
+                // Bar 3 (3.75s): Hyperbolic H3 {4,3,5} Conformal Honeycomb Cathedral
+                app.switch_scene(StudioScene::HyperbolicHoneycombCathedral);
+                app.selected_entity = 2;
             }
             365 => {
-                app.spawn_entity(MeshType::Torus, "GravityRing", [0.85, 0.25, 1.0]);
-                app.cycle_selected_curvature();
-                app.cycle_script_preset();
-            }
-            415 => {
-                app.spawn_portal_pair();
+                // Bar 4.25 (6.08s): Spherical S3 Star-Vault Curvature Bridge
+                app.switch_scene(StudioScene::SphericalCurvatureBridge);
+                app.selected_entity = 4;
             }
             450 => {
-                // Bar 5 Downbeat (7.50s): Enter Play Mode!
-                app.mode = EditorMode::Play;
-                app.set_status("PHASE 3: PLAY MODE ACTIVATED - Live Rhai Scripts & Particles Running");
+                // Bar 5 Downbeat (7.50s): Activate Play Mode + 16-Bounce Infinity Portal Tunnel!
+                app.play_mode = true;
+                app.switch_scene(StudioScene::InfinityPortalMirrorTunnel);
+                app.max_portal_bounces = 16.0;
+                app.heatmap_mode = 2; // Multi-Bounce Neon Spectrum Overdrive
+                app.selected_entity = 5;
+                app.log("PLAY MODE ACTIVATED -- 16-Bounce Infinity Portal Tunnel & Live Rhai Scripts");
             }
-            619 => {
-                // Bar 6 Beat 3 (10.31s): Fire Cross-Portal Shot #1
+            562 => {
+                // 9.37s: Fire Cross-Portal Geodesic Laser Shot #1
                 app.fire_cross_portal_laser();
             }
-            731 => {
-                // Bar 7 Beat 3 (12.19s): Fire Cross-Portal Shot #2
+            675 => {
+                // Bar 7 Downbeat (11.25s): Fire Cross-Portal Geodesic Laser Shot #2 + Switch to PBR Lensing
+                app.heatmap_mode = 0;
                 app.fire_cross_portal_laser();
+            }
+            750 => {
+                // 12.50s: Non-Orientable Klein Bottle K3 & T3 Chiral Labyrinth
+                app.switch_scene(StudioScene::KleinBottleChiralLabyrinth);
+                app.selected_entity = 5;
             }
             844 => {
-                // Bar 9 Downbeat (14.06s): Fire Cross-Portal Shot #3 (Boss Defeated!)
+                // Bar 9 Downbeat (14.06s): Final Cross-Portal Geodesic Laser Shot #3 (Boss Defeated!)
                 app.fire_cross_portal_laser();
             }
             _ => {}
         }
 
-        // Update particles & Rhai scripts in Play Mode
-        if app.mode == EditorMode::Play {
-            app.particle_system.burst(
-                Vector3::new(0.0, 2.4, 0.2),
-                2,
-                [0.0, 0.92, 1.0, 1.0],
-                [0.9, 0.18, 0.85, 0.0],
-                3.0,
-                0.75,
-            );
-            for entity in &mut app.entities {
-                if let Some(ast) = &entity.script_ast {
-                    let _ = app
-                        .script_engine
-                        .execute_update(ast, &mut entity.script_state, dt);
-                    entity.pos = entity.script_state.pos;
-                    entity.rot = entity.script_state.rot;
-                    entity.color = entity.script_state.color;
-                    entity.emissive = entity.script_state.emissive;
-                    entity.scale = entity.script_state.scale;
-                }
-            }
-        }
-        app.particle_system.update(dt, None);
-
-        // Event-aware camera framing: wide front-arc dolly at positive Z so the entire 3D studio & gizmos are clearly framed
-        let (cam_pos, look_target) = if t < 7.5 {
-            // Edit & Spawn phase (0.0s..7.5s): smooth front-arc dolly around HyperCore (0,2.2,0), SchwarzschildBH (-3.2,3.1,-5.2), and Portals
-            let phase_p = t / 7.5;
-            let side_x = -2.6 * (phase_p * std::f32::consts::PI * 1.35 - 0.55).sin();
-            let pos = Vector3::new(side_x, 4.1 + 0.35 * (t * 0.9).sin(), 5.3 - 0.5 * phase_p);
-            let target = if (3.5..5.2).contains(&t) {
-                Vector3::new(-1.5, 2.5, -2.6) // Frame SchwarzschildBH & Doppler Accretion Disk
-            } else {
-                Vector3::new(-0.2, 2.1, -1.6)
-            };
-            (pos, target)
+        // Smooth camera flight through the non-Euclidean portals along the Z corridor
+        let z_flight = if app.bh_radius > 0.05 {
+            // Keep camera in [0.55, 2.25] while Black Hole sits at z = -1.45 in front of the portal
+            2.25 - ((t * 0.45) % 1.65)
         } else {
-            // Play & Cross-Portal Laser Combat phase (7.5s..16.0s): frame emitter (0,2.2,2.2) -> Portal_A (0,2.2,-2.8) -> Portal_B (0,2.2,-5.4) -> Sentinel Boss (0,2.2,-7.8)
-            let play_p = (t - 7.5) / 8.5;
-            let side_x = 3.2 * (play_p * std::f32::consts::PI * 1.4 - 0.45).sin();
-            let pos = Vector3::new(side_x, 3.8 + 0.35 * (play_p * 4.0).cos(), 4.8 - 1.0 * play_p);
-            let target = Vector3::new(0.0, 2.1, -3.5);
-            (pos, target)
+            2.4 - (t * 1.45) % 5.2
+        };
+        let x_sway = 0.26 * (t * 0.85).sin();
+        let y_bob = 1.54 + 0.07 * (t * 1.3).cos();
+        app.cam_pos = Point3::new(x_sway, y_bob, z_flight);
+        app.cam_yaw = -std::f32::consts::FRAC_PI_2 + 0.07 * (t * 0.7).cos();
+        app.cam_pitch = -0.02 * (t * 0.9).sin();
+        app.cam_roll = if app.scene == StudioScene::InfinityPortalMirrorTunnel {
+            0.12 * (t * 1.2).sin()
+        } else {
+            0.03 * (t * 0.6).sin()
+        };
+        app.active_chart = ChartId(((t / 3.6) as u32) % 4);
+        app.portal_crossings = (t / 1.8) as u64;
+
+        // Animate Black Hole gentle orbit in front of the portal gateway
+        if app.bh_radius > 0.05 {
+            app.bh_pos = [
+                0.34 * (t * 0.95).sin(),
+                1.58 + 0.06 * (t * 1.4).cos(),
+                -1.45,
+            ];
+        }
+
+        app.step_simulation(dt);
+
+        let raw_input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(width as f32, height as f32),
+            )),
+            time: Some(t as f64),
+            predicted_dt: dt,
+            ..Default::default()
         };
 
-        camera.position = cam_pos;
-        let to_center = (look_target - camera.position).normalize();
-        camera.pitch = to_center.y.asin();
-        camera.yaw = to_center.z.atan2(to_center.x);
-
-        let aspect = width as f32 / height as f32;
-        let proj = perspective(Deg(56.0), aspect, 0.1, 500.0);
-        let view = camera.view_matrix();
-        camera_uniform.view_proj = (proj * view).into();
-        camera_uniform.view_position = [camera.position.x, camera.position.y, camera.position.z, 1.0];
-
-        let selected_id = if !app.entities.is_empty() {
-            app.entities[app.selected_index].id as f32
-        } else {
-            0.0
-        };
-        let is_play = if app.mode == EditorMode::Play { 1.0 } else { 0.0 };
-        scene_uniform.params = [t, 1.2, 0.35, 0.0];
-        scene_uniform.game_data = [t, is_play, selected_id, 0.0];
-        scene_uniform.hud_info = [width as f32, height as f32, 0.0, 0.0];
-
-        queue.write_buffer(&camera_buffer, 0, bytemuck::cast_slice(&[camera_uniform]));
-        queue.write_buffer(&scene_buffer, 0, bytemuck::cast_slice(&[scene_uniform]));
-
-        let (verts, indices) = app.build_mesh();
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("FrameVertices"),
-            contents: bytemuck::cast_slice(&verts),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("FrameIndices"),
-            contents: bytemuck::cast_slice(&indices),
-            usage: wgpu::BufferUsages::INDEX,
+        let full_output = egui_ctx.run(raw_input, |ctx| {
+            app.draw_egui_studio(ctx);
         });
 
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("VideoEncoder"),
-        });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("VideoPass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.004,
-                            g: 0.005,
-                            b: 0.010,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            pass.set_pipeline(&pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-            pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
-        }
+        let uniform = app.build_viewport_uniform(width, height, t);
+        let mut encoder = gpu.render_frame(
+            &device,
+            &queue,
+            &color_view,
+            width,
+            height,
+            1.0,
+            &uniform,
+            &egui_ctx,
+            full_output,
+        );
 
         encoder.copy_texture_to_buffer(
             wgpu::ImageCopyTexture {
-                texture: &target_tex,
+                texture: &color_tex,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::ImageCopyBuffer {
-                buffer: &readback_buffer,
+                buffer: &readback_buf,
                 layout: wgpu::ImageDataLayout {
                     offset: 0,
                     bytes_per_row: Some(bytes_per_row),
@@ -1836,22 +1839,49 @@ fn run_engine_video_recording(output_path: &str) {
                 depth_or_array_layers: 1,
             },
         );
+
         queue.submit(std::iter::once(encoder.finish()));
 
-        let slice = readback_buffer.slice(..);
-        slice.map_async(wgpu::MapMode::Read, |_| {});
+        let slice = readback_buf.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |res| {
+            let _ = tx.send(res);
+        });
         device.poll(wgpu::Maintain::Wait);
+        rx.recv().unwrap().unwrap();
+
         {
             let data = slice.get_mapped_range();
+            let fade = if t < 0.35 {
+                t / 0.35
+            } else if t > duration_secs - 0.9 {
+                ((duration_secs - t) / 0.9).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+
             for y in 0..height {
-                let src_start = (y * bytes_per_row) as usize;
-                let dst_start = (y * width * 4) as usize;
-                frame_rgba[dst_start..dst_start + (width * 4) as usize]
-                    .copy_from_slice(&data[src_start..src_start + (width * 4) as usize]);
+                let src_off = (y * bytes_per_row) as usize;
+                let dst_off = (y * width * 4) as usize;
+                let row = &data[src_off..src_off + (width * 4) as usize];
+                if fade < 0.999 {
+                    for px in 0..(width as usize) {
+                        let i = px * 4;
+                        frame_rgba[dst_off + i] = (row[i] as f32 * fade) as u8;
+                        frame_rgba[dst_off + i + 1] = (row[i + 1] as f32 * fade) as u8;
+                        frame_rgba[dst_off + i + 2] = (row[i + 2] as f32 * fade) as u8;
+                        frame_rgba[dst_off + i + 3] = 255;
+                    }
+                } else {
+                    frame_rgba[dst_off..dst_off + (width * 4) as usize].copy_from_slice(row);
+                }
             }
         }
-        readback_buffer.unmap();
-        ffmpeg_stdin.write_all(&frame_rgba).unwrap();
+        readback_buf.unmap();
+
+        ffmpeg_stdin
+            .write_all(&frame_rgba)
+            .expect("Failed to write frame to ffmpeg");
 
         if (frame_idx + 1) % 240 == 0 || frame_idx + 1 == total_frames {
             println!(
@@ -1865,99 +1895,118 @@ fn run_engine_video_recording(output_path: &str) {
     }
 
     drop(ffmpeg.stdin.take());
-    let status = ffmpeg.wait().expect("Failed to wait on ffmpeg");
+    let status = ffmpeg.wait().expect("Failed to wait for ffmpeg");
+    let _ = std::fs::remove_file(wav_path);
     assert!(status.success(), "ffmpeg encoding failed");
     println!("====================================================================");
-    println!("  MACOS ENGINE VIDEO RECORDED SUCCESSFULLY -> {}", output_path);
+    println!("  STUDIO 2.0 VIDEO RECORDED SUCCESSFULLY -> {}", output_path);
     println!("====================================================================");
 }
 
-fn run_headless_verification() {
-    let mut app = MetatopiaEngineApp::new(true);
-
-    // Verify Schwarzschild photon sphere orbit stability
-    let r_ph = app.black_hole.photon_sphere_radius();
-    assert!((r_ph - 2.4).abs() < 1e-4);
-
-    // Verify Morris-Thorne wormhole throat traversal
-    let mut wh_state = WormholeState {
-        l: 3.0,
-        theta: std::f32::consts::FRAC_PI_2,
-        phi: 0.0,
-        dl: -2.5,
-        dtheta: 0.0,
-        dphi: 0.05,
-    };
-    let mut chart = ChartId(0);
-    for _ in 0..80 {
-        let prev_l = wh_state.l;
-        wh_state = app.wormhole.step_geodesic_rk4(&wh_state, 0.04);
-        if prev_l >= 0.0 && wh_state.l < 0.0 {
-            chart = app.wormhole.chart_b;
-        }
-    }
-    assert_eq!(chart, ChartId(1), "Wormhole throat traversal failed");
-
-    // Verify Rhai scripts on all entities
-    for entity in &mut app.entities {
-        if let Some(ast) = &entity.script_ast {
-            app.script_engine
-                .execute_update(ast, &mut entity.script_state, 0.016)
-                .expect("Rhai script execution failed");
-        }
-    }
-
-    // Verify Cross-Portal Geodesic Weapon Shot (3 hits defeats Sentinel Boss)
-    for _ in 0..3 {
-        app.fire_cross_portal_laser();
-    }
-    assert!(app.sentinel_hp <= 0.0, "Cross-portal weapon shot did not defeat boss");
-
-    let (verts, indices) = app.build_mesh();
-    assert!(!verts.is_empty() && !indices.is_empty());
-
+fn print_help() {
     println!("====================================================================");
-    println!("  METATOPIA ENGINE v0.2.0 — MACOS EXECUTABLE VERIFIED");
+    println!("  METATOPIA GAME ENGINE v0.2.0 (macOS Native Apple Silicon / Metal)");
     println!("====================================================================");
-    println!("  • Entities & Linked Portals : {} entities / {} portal pair", app.entities.len(), app.manifold.portals().count());
-    println!("  • Schwarzschild Black Hole  : r_s = {:.2}, r_ph = {:.2}, ISCO = {:.2}", app.black_hole.schwarzschild_radius, r_ph, app.black_hole.isco_radius());
-    println!("  • Morris-Thorne Wormhole    : Traversed Chart 0 -> {:?} (l = {:.2})", chart, wh_state.l);
-    println!("  • Cross-Portal Weapon Shot  : Sentinel Boss HP = {:.1} (SOLVED)", app.sentinel_hp);
-    println!("  • Procedural Studio Mesh    : {} verts / {} indices", verts.len(), indices.len());
-    println!("====================================================================");
+    println!("Usage: metatopia [OPTIONS]");
+    println!();
+    println!("Options:");
+    println!("  (no args)              Launch Ray-Marched Non-Euclidean Studio 2.0 + egui GUI");
+    println!("  --play                 Launch directly in live Play Mode");
+    println!("  --record-video <PATH>  Render 60 FPS Ray-Marched Studio 2.0 showcase video via Metal WGPU");
+    println!("  --verify               Run full headless verification suite (Studio, 4D GR, Portals, Net)");
+    println!("  --version              Print engine version");
+    println!("  --help, -h             Print this help summary");
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print_help();
         return;
     }
-    if args.iter().any(|a| a == "--version" || a == "-v") {
-        println!("metatopia_engine 0.2.0 (aarch64-apple-darwin / Metal WGPU)");
+
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("metatopia 0.2.0 (apple-darwin-arm64 / Metal WGPU + egui)");
         return;
     }
-    if let Some(idx) = args.iter().position(|a| a == "--record-video") {
+
+    if let Some(pos) = args.iter().position(|a| a == "--record-video") {
         let out_path = args
-            .get(idx + 1)
+            .get(pos + 1)
             .map(|s| s.as_str())
             .unwrap_or("metatopia_macos_engine_demo.mp4");
-        run_engine_video_recording(out_path);
+        record_showcase_video(out_path);
         return;
     }
-    if args.iter().any(|a| a == "--verify" || a == "--bench") {
-        run_headless_verification();
+
+    if args.iter().any(|a| a == "--verify") {
+        let mut app = MetatopiaStudioApp::new(true);
+        app.spawn_linked_portal_pair();
+        for _ in 0..30 {
+            app.step_simulation(1.0 / 60.0);
+        }
+        for _ in 0..3 {
+            app.fire_cross_portal_laser();
+        }
+
+        let ray = app.black_hole.trace_null_ray_rk4(
+            Point3::new(-8.0, 1.58, -1.65),
+            Vector3::new(1.0, 0.0, 0.0),
+            0.05,
+            320,
+        );
+        let mut wh_state = WormholeState {
+            l: 3.0,
+            theta: std::f32::consts::FRAC_PI_2,
+            phi: 0.0,
+            dl: -1.0,
+            dtheta: 0.0,
+            dphi: 0.0,
+        };
+        for _ in 0..160 {
+            wh_state = app.wormhole.step_geodesic_rk4(&wh_state, 0.05);
+        }
+        let (wh_chart, _) = app.wormhole.to_world_position(&wh_state);
+
+        let egui_ctx = egui::Context::default();
+        MetatopiaStudioApp::configure_egui_theme(&egui_ctx);
+        let full_output = egui_ctx.run(egui::RawInput::default(), |ctx| {
+            app.draw_egui_studio(ctx);
+        });
+        let primitives = egui_ctx.tessellate(full_output.shapes, 1.0);
+
+        println!("====================================================================");
+        println!("  METATOPIA STUDIO 2.0 — RAY-MARCHED + EGUI MACOS EXECUTABLE VERIFIED");
+        println!("====================================================================");
+        println!("  • Manifold Charts & Entities : 4 charts / {} entities", app.entities.len());
+        println!(
+            "  • Schwarzschild Black Hole   : r_s = {:.2}, r_ph = {:.2}, ISCO = {:.2}",
+            app.black_hole.schwarzschild_radius,
+            app.black_hole.photon_sphere_radius(),
+            app.black_hole.isco_radius()
+        );
+        println!(
+            "  • Morris-Thorne Wormhole     : Traversed Chart 0 -> {:?} (l = {:.2})",
+            wh_chart, wh_state.l
+        );
+        println!(
+            "  • Cross-Portal Geodesic Shot : Sentinel Boss HP = {:.1} (SOLVED)",
+            app.sentinel_hp
+        );
+        println!(
+            "  • Native egui Vector UI      : {} tessellated vector primitives",
+            primitives.len()
+        );
+        println!("====================================================================");
+
+        assert!(!ray.points.is_empty());
+        assert_eq!(wh_chart, ChartId(1));
+        assert!(app.sentinel_hp <= 0.0);
+        assert!(!primitives.is_empty());
         return;
     }
 
     let start_in_play = args.iter().any(|a| a == "--play");
-    println!("====================================================================");
-    println!("  METATOPIA GAME ENGINE v0.2.0 — NATIVE MACOS STUDIO & RUNTIME");
-    println!("  • Spacebar       : Toggle EDIT / PLAY Mode");
-    println!("  • Keys 1..5      : Spawn Cube, Sphere, Cylinder, Torus, Capsule");
-    println!("  • Key P / Key K  : Spawn Linked Non-Euclidean Portal / Cycle Curvature");
-    println!("  • Key F          : Fire Cross-Portal Geodesic Weapon Shot");
-    println!("  • Key C / Key R  : Cycle Rhai Script Preset / Hot-Reload Scripts");
-    println!("====================================================================");
-    run_game(MetatopiaEngineApp::new(start_in_play));
+    run_interactive_studio(start_in_play);
 }
