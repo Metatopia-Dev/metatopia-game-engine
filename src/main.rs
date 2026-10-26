@@ -1084,11 +1084,508 @@ fn print_help() {
     println!("Usage: metatopia [OPTIONS]");
     println!();
     println!("Options:");
-    println!("  (no args)    Launch Metatopia Studio 2.0 & 3D Game Engine GUI");
-    println!("  --play       Launch directly in live Play Mode (Scripts & Physics active)");
-    println!("  --verify     Run full headless verification suite (Studio, 4D GR, Portals, Net)");
-    println!("  --version    Print engine version");
-    println!("  --help, -h   Print this help summary");
+    println!("  (no args)              Launch Metatopia Studio 2.0 & 3D Game Engine GUI");
+    println!("  --play                 Launch directly in live Play Mode (Scripts & Physics active)");
+    println!("  --record-video <PATH>  Render 60 FPS macOS Engine & Studio showcase video via Metal WGPU");
+    println!("  --verify               Run full headless verification suite (Studio, 4D GR, Portals, Net)");
+    println!("  --version              Print engine version");
+    println!("  --help, -h             Print this help summary");
+}
+
+fn synthesize_engine_demo_wav(wav_path: &str, duration_secs: f32) {
+    use std::io::Write;
+    let sample_rate = 48_000u32;
+    let num_samples = (duration_secs * sample_rate as f32) as usize;
+    let bpm = 128.0f32;
+    let beat_sec = 60.0 / bpm;
+    let step16_sec = beat_sec * 0.25;
+    let tau = std::f32::consts::TAU;
+    let arp_notes: [f32; 8] = [349.23, 415.30, 523.25, 622.25, 698.46, 622.25, 523.25, 415.30];
+
+    let data_bytes = (num_samples * 4) as u32;
+    let mut pcm = Vec::with_capacity(44 + data_bytes as usize);
+    pcm.extend_from_slice(b"RIFF");
+    pcm.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+    pcm.extend_from_slice(b"WAVEfmt ");
+    pcm.extend_from_slice(&16u32.to_le_bytes());
+    pcm.extend_from_slice(&1u16.to_le_bytes());
+    pcm.extend_from_slice(&2u16.to_le_bytes());
+    pcm.extend_from_slice(&sample_rate.to_le_bytes());
+    pcm.extend_from_slice(&(sample_rate * 4).to_le_bytes());
+    pcm.extend_from_slice(&4u16.to_le_bytes());
+    pcm.extend_from_slice(&16u16.to_le_bytes());
+    pcm.extend_from_slice(b"data");
+    pcm.extend_from_slice(&data_bytes.to_le_bytes());
+
+    for i in 0..num_samples {
+        let t = i as f32 / sample_rate as f32;
+        let beat_pos = (t / beat_sec).fract();
+        let step16_idx = (t / step16_sec).floor() as usize;
+        let step16_pos = (t / step16_sec).fract();
+
+        let kick_freq = 48.0 + 115.0 * (-beat_pos * 28.0).exp();
+        let kick = (tau * kick_freq * t).sin() * (-beat_pos * 6.0).exp() * 0.52;
+        let sidechain = (1.0 - (-beat_pos * 5.5).exp() * 0.65).clamp(0.25, 1.0);
+
+        let bass_freq = if (step16_idx / 16) % 2 == 0 { 43.65 } else { 51.91 };
+        let bass = ((tau * bass_freq * t).sin() + 0.4 * (tau * bass_freq * 2.0 * t).sin()).tanh()
+            * sidechain
+            * 0.34;
+
+        let arp_f = arp_notes[step16_idx % arp_notes.len()];
+        let arp_env = (-step16_pos * 9.0).exp();
+        let arp = (tau * arp_f * t + 1.4 * (tau * arp_f * 2.0 * t).sin() * arp_env).sin()
+            * arp_env
+            * 0.22;
+
+        let fade = if t < 0.5 {
+            t / 0.5
+        } else if t > duration_secs - 1.2 {
+            ((duration_secs - t) / 1.2).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+
+        let l = ((kick + bass + arp * 0.9) * fade * 28_000.0).clamp(-32_767.0, 32_767.0) as i16;
+        let r = ((kick + bass + arp * 1.1) * fade * 28_000.0).clamp(-32_767.0, 32_767.0) as i16;
+        pcm.extend_from_slice(&l.to_le_bytes());
+        pcm.extend_from_slice(&r.to_le_bytes());
+    }
+
+    let mut f = std::fs::File::create(wav_path).expect("Failed to create WAV file");
+    f.write_all(&pcm).expect("Failed to write WAV file");
+}
+
+fn run_engine_video_recording(output_path: &str) {
+    use cgmath::{Deg, perspective};
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    use wgpu::util::DeviceExt;
+
+    let width = 1280u32;
+    let height = 720u32;
+    let fps = 60u32;
+    let duration_secs = 16.0f32;
+    let total_frames = (fps as f32 * duration_secs) as u32; // 960 frames @ 60 FPS
+
+    let wav_path = "/tmp/metatopia_macos_engine_demo.wav";
+    synthesize_engine_demo_wav(wav_path, duration_secs);
+
+    let instance = wgpu::Instance::default();
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        compatible_surface: None,
+        force_fallback_adapter: false,
+    }))
+    .expect("Failed to acquire Metal GPU adapter");
+
+    let (device, queue) = pollster::block_on(adapter.request_device(
+        &wgpu::DeviceDescriptor {
+            label: Some("MetatopiaVideoDevice"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+        },
+        None,
+    ))
+    .expect("Failed to create WGPU device");
+
+    let target_format = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let target_tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("EngineVideoTarget"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: target_format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let target_view = target_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let depth_tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("EngineVideoDepth"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Depth32Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let depth_view = depth_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let bytes_per_row = (width * 4 + 255) & !255;
+    let readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("EngineVideoReadback"),
+        size: (bytes_per_row * height) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+
+    let mut camera_uniform = CameraUniform {
+        view_proj: [[0.0; 4]; 4],
+        view_position: [0.0; 4],
+    };
+    let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("CameraUniform"),
+        contents: bytemuck::cast_slice(&[camera_uniform]),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
+    let mut scene_uniform = SceneUniform::default();
+    scene_uniform.sun_direction = [-0.5, -1.0, -0.6, 0.0];
+    scene_uniform.sun_color = [1.0, 0.98, 0.92, 1.0];
+    let scene_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("SceneUniform"),
+        contents: bytemuck::cast_slice(&[scene_uniform]),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
+    let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Uniforms"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    });
+
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("UniformsBG"),
+        layout: &bind_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: scene_buffer.as_entire_binding(),
+            },
+        ],
+    });
+
+    let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("EditorShader"),
+        source: wgpu::ShaderSource::Wgsl(SHADER_SRC.into()),
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[&bind_layout],
+        push_constant_ranges: &[],
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("EngineVideoPipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader_module,
+            entry_point: "vs_main",
+            buffers: &[GameVertex::LAYOUT],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader_module,
+            entry_point: "fs_main",
+            targets: &[Some(wgpu::ColorTargetState {
+                format: target_format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::LessEqual,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+    });
+
+    let mut ffmpeg = Command::new("/opt/homebrew/bin/ffmpeg")
+        .args([
+            "-y",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgba",
+            "-s",
+            &format!("{}x{}", width, height),
+            "-r",
+            &fps.to_string(),
+            "-i",
+            "-",
+            "-i",
+            wav_path,
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-preset",
+            "fast",
+            "-crf",
+            "19",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-shortest",
+            "-movflags",
+            "+faststart",
+            output_path,
+        ])
+        .stdin(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("Failed to spawn ffmpeg");
+
+    let ffmpeg_stdin = ffmpeg.stdin.as_mut().expect("Failed to open ffmpeg stdin");
+    let mut app = MetatopiaEngineApp::new(false);
+    let mut camera = FpsCamera::default();
+    let dt = 1.0 / (fps as f32);
+    let mut frame_rgba = vec![0u8; (width * height * 4) as usize];
+
+    println!("====================================================================");
+    println!("  RECORDING MACOS ENGINE SHOWCASE VIDEO (960 frames @ 60 FPS)");
+    println!("  Output: {}", output_path);
+    println!("====================================================================");
+
+    for frame_idx in 0..total_frames {
+        let t = frame_idx as f32 * dt;
+
+        // Scripted live engine showcase choreography:
+        match frame_idx {
+            0 => {
+                app.selected_index = 0;
+                app.set_status("PHASE 1: EDIT MODE — Inspecting HyperCore & 3D Transform Gizmo");
+            }
+            75 => {
+                app.selected_index = 1;
+                app.set_status("SELECTED: ChronoOrb (ID #2) — Inspecting Transform & Rhai Preset");
+            }
+            150 => {
+                app.selected_index = 4;
+                app.set_status("SELECTED: SchwarzschildBH (ID #5) — Photon Sphere r_ph = 2.40");
+            }
+            225 => {
+                app.spawn_entity(MeshType::Cube, "CyberCube", [0.2, 0.85, 1.0]);
+            }
+            300 => {
+                app.spawn_entity(MeshType::Torus, "GravityRing", [0.85, 0.25, 1.0]);
+            }
+            360 => {
+                app.cycle_selected_curvature();
+                app.cycle_script_preset();
+            }
+            420 => {
+                app.spawn_portal_pair();
+            }
+            480 => {
+                app.mode = EditorMode::Play;
+                app.set_status("PHASE 3: PLAY MODE ACTIVATED — Live Rhai Scripts & Particles Running");
+            }
+            700 => {
+                app.fire_cross_portal_laser();
+            }
+            780 => {
+                app.fire_cross_portal_laser();
+            }
+            860 => {
+                app.fire_cross_portal_laser();
+            }
+            _ => {}
+        }
+
+        // Update particles & Rhai scripts in Play Mode
+        if app.mode == EditorMode::Play {
+            app.particle_system.burst(
+                Vector3::new(0.0, 2.5, 0.0),
+                3,
+                [0.0, 0.95, 1.0, 1.0],
+                [0.9, 0.15, 0.85, 0.0],
+                3.5,
+                0.85,
+            );
+            for entity in &mut app.entities {
+                if let Some(ast) = &entity.script_ast {
+                    let _ = app
+                        .script_engine
+                        .execute_update(ast, &mut entity.script_state, dt);
+                    entity.pos = entity.script_state.pos;
+                    entity.rot = entity.script_state.rot;
+                    entity.color = entity.script_state.color;
+                    entity.emissive = entity.script_state.emissive;
+                    entity.scale = entity.script_state.scale;
+                }
+            }
+        }
+        app.particle_system.update(dt, None);
+
+        // Smooth orbital camera around the 3D viewport
+        let orbit_angle = t * 0.38 - std::f32::consts::FRAC_PI_2;
+        let radius = 13.5 - 1.8 * (t * 0.45).sin();
+        camera.position = Vector3::new(
+            orbit_angle.cos() * radius,
+            5.8 + 1.1 * (t * 0.6).sin(),
+            orbit_angle.sin() * radius + 1.5,
+        );
+        let to_center = (Vector3::new(0.0, 2.2, -1.5) - camera.position).normalize();
+        camera.pitch = to_center.y.asin();
+        camera.yaw = to_center.z.atan2(to_center.x);
+
+        let aspect = width as f32 / height as f32;
+        let proj = perspective(Deg(68.0), aspect, 0.1, 500.0);
+        let view = camera.view_matrix();
+        camera_uniform.view_proj = (proj * view).into();
+        camera_uniform.view_position = [camera.position.x, camera.position.y, camera.position.z, 1.0];
+
+        let selected_id = if !app.entities.is_empty() {
+            app.entities[app.selected_index].id as f32
+        } else {
+            0.0
+        };
+        let is_play = if app.mode == EditorMode::Play { 1.0 } else { 0.0 };
+        scene_uniform.params = [t, 1.2, 0.35, 0.0];
+        scene_uniform.game_data = [t, is_play, selected_id, 0.0];
+        scene_uniform.hud_info = [width as f32, height as f32, 0.0, 0.0];
+
+        queue.write_buffer(&camera_buffer, 0, bytemuck::cast_slice(&[camera_uniform]));
+        queue.write_buffer(&scene_buffer, 0, bytemuck::cast_slice(&[scene_uniform]));
+
+        let (verts, indices) = app.build_mesh();
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("FrameVertices"),
+            contents: bytemuck::cast_slice(&verts),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("FrameIndices"),
+            contents: bytemuck::cast_slice(&indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("VideoEncoder"),
+        });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("VideoPass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.05,
+                            g: 0.05,
+                            b: 0.08,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
+        }
+
+        encoder.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture {
+                texture: &target_tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyBuffer {
+                buffer: &readback_buffer,
+                layout: wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(std::iter::once(encoder.finish()));
+
+        let slice = readback_buffer.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::Maintain::Wait);
+        {
+            let data = slice.get_mapped_range();
+            for y in 0..height {
+                let src_start = (y * bytes_per_row) as usize;
+                let dst_start = (y * width * 4) as usize;
+                frame_rgba[dst_start..dst_start + (width * 4) as usize]
+                    .copy_from_slice(&data[src_start..src_start + (width * 4) as usize]);
+            }
+        }
+        readback_buffer.unmap();
+        ffmpeg_stdin.write_all(&frame_rgba).unwrap();
+
+        if (frame_idx + 1) % 240 == 0 || frame_idx + 1 == total_frames {
+            println!(
+                "  • Rendered {}/{} frames ({:.1}s / {:.1}s)",
+                frame_idx + 1,
+                total_frames,
+                (frame_idx + 1) as f32 / fps as f32,
+                duration_secs
+            );
+        }
+    }
+
+    drop(ffmpeg.stdin.take());
+    let status = ffmpeg.wait().expect("Failed to wait on ffmpeg");
+    assert!(status.success(), "ffmpeg encoding failed");
+    println!("====================================================================");
+    println!("  MACOS ENGINE VIDEO RECORDED SUCCESSFULLY -> {}", output_path);
+    println!("====================================================================");
 }
 
 fn run_headless_verification() {
@@ -1154,6 +1651,14 @@ fn main() {
     }
     if args.iter().any(|a| a == "--version" || a == "-v") {
         println!("metatopia_engine 0.2.0 (aarch64-apple-darwin / Metal WGPU)");
+        return;
+    }
+    if let Some(idx) = args.iter().position(|a| a == "--record-video") {
+        let out_path = args
+            .get(idx + 1)
+            .map(|s| s.as_str())
+            .unwrap_or("metatopia_macos_engine_demo.mp4");
+        run_engine_video_recording(out_path);
         return;
     }
     if args.iter().any(|a| a == "--verify" || a == "--bench") {
