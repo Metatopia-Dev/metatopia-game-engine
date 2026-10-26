@@ -94,3 +94,6 @@ node_modules/
 
 # Compiled assets
 /assets/compiled/
+# macOS release bundles
+dist/
+
